@@ -1,0 +1,1607 @@
+*=$1000
+;*=4096+512+1	; KLUDGEZZZZ
+;!to "boot.prg"
+!cpu 6510
+
+!source "loader_glob.inc"
+!source "drive_glob.inc"
+!sl "start_glob.inc"
+
+!if (1=2) {
+!zone basic
+linenum=2007
+basic:	!word .basend,linenum
+        !byte $9e
+	!byte $30+(mcstart/1000)
+        !byte $30+((mcstart/100)%10)
+        !byte $30+((mcstart/10)%10)
+        !byte $30+(mcstart%10)
+
+;	!source "listlogo.inc"
+
+        !byte 0
+.basend	!word 0,0
+}
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+CHROUT=$ffd2
+IOINIT=$fdf9
+SECND=$ff93
+CIOUT=$ffa8
+UNLSN=$ffae
+LISTN=$ffb1
+
+CLALL=$ffe7
+
+SETLFS=$ffba
+SETNAM=$ffbd
+OPEN=$ffc0	;?
+CHKOUT=$ffc9
+CHROUT=$ffd2
+CLRCHN=$ffcc
+READST=$ffb7
+
+iecport1 = $912c	;$dd00	;$912c
+dato = 32		;32	;32
+clko = 2		;16	;2
+iecport2 = $911f	;$dd00	;$911f
+atno = 128		;8	;128
+clki = 1		;64	;1
+dati = 2		;128	;2
+
+iec_in  = $911f
+iec_out = $912c
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+!if (1=2) {
+!zone musicplayer
+
+numberOfChannels=6
+numberOfMelodyChannels=3
+chidxNoise=3
+chidxChord=4
+
+voiceTmp=$f4
+
+musicplayer:
+  	;;; FETCH CHANNEL STATES ;;;
+
+	ldx #numberOfChannels-1
+
+	; tempo subdivide
+
+.l0	dec chTempoCounters,x
+	bne .nextCh
+
+	; fetch data & increment pointer.
+	; bit7=1 resets pointer instead of incrementing
+
+.incPtr	ldy chPointers,x
+	lda chData,y
+	bpl .c1
+	ldy chInitPointers,x
+.c1	iny
+	pha	; BLAEAEH
+	tya
+	sta chPointers,x
+	pla
+
+	asl	; channel state between 0..255, step 4
+	asl
+	sta chStates,x
+
+	; reset tempocounter, bit0=1 doubles waitlength
+
+	lda chTempos,x
+	bcc .c2	
+	asl
+.c2	sta chTempoCounters,x
+
+.nextCh	dex
+	bpl .l0
+
+	;;; PROCESS CHANNEL STATES ;;;
+
+	;;; NOISE CHANNEL ;;;
+
+	ldx chStates+chidxNoise
+	lda noiseTable,x
+	beq .nonoise
+	inc chStates+chidxNoise
+	sta $900d
+.nonoise
+
+	;;; MELODY CHANNELS ;;;
+
+	ldx #numberOfMelodyChannels-1
+
+.l9	lda chStates,x
+	lsr
+	lsr
+	lsr
+	php
+	lsr
+	php
+	clc
+	beq .silent
+	adc chStates+chidxChord
+.silent	tay
+	lda pitches,y
+	plp
+	bcc .c0			; hibit = do octaveblip
+	ror
+.c0	plp
+	bcc .c9
+	ror
+.c9
+	; TODO setwave
+	pha;sta voiceTmp,x  ; ->pha?
+
+	lda chStates,x
+	and #$F8
+	sta chStates,x
+
+	dex
+	bpl .l9
+
+	ldy #$c
+.l3	pla
+	tax ; ldx voiceTmp-$a,y ; ->pla?
+	lda $9000,y
+	bmi .nowave
+	lda voiceWaves-$a,y
+	bne .setwave
+.nowave
+	txa
+	sta $9000,y
+	jmp .nextVc
+.setwave
+	; x = initfreq
+	; y = channel (a/b/c)
+	; a = waveform
+        TMP=$ff
+        TMP2=$fe
+
+        stx .initfreq   ; 4
+
+.waved  sty .ch0        ; 4
+        sty .ch1        ; 4
+        ldx .ldfqmasks-$a,y ; 4
+        sta TMP         ; 3
+
+        ora #$7f        ; 2
+
+        sax $900c       ; 4  [$900c] = a AND x
+        .ch0=*-2
+        sty TMP2        ; 3
+        ldy #7          ; 2
+
+.l6     lda #$7f        ; 2
+        slo TMP         ; 5  asl tmp; a = [tmp] OR $7f
+        sax $900c       ; 4  [$900c] = a AND x
+        .ch1=*-2                 
+        dey             ; 2
+        bne .l6         ; 3
+
+        lda #128        ; 2
+        .initfreq=*-1
+        nop             ; 2
+        ldy TMP2        ; 3
+.noset: sta $9000,y     ; 5
+
+.nextVc	dey
+	cpy #$9
+	bne .l3
+	rts
+
+.ldfqmasks:
+     !byte $fe  ; $900a - 1 x 16 clocks/bit
+     !byte $fd  ; $900b - 2 x  8 clocks/bit
+     !byte $fb  ; $900c - 4 x  4 clocks/bit
+     !byte $fe
+
+; blippiness:
+
+; blip: if 
+
+; chState will be anded by something that turns blip off
+
+; noise channel: state = pointer to noisetable. incremented.
+; 3 melody 
+
+; melody channel:.
+; - lookup pitch: low n bits of 
+
+; - blip: 
+; - octaveup: inc, 
+
+; first, lookup 
+
+; blip logic:
+
+; channels:
+; - 3 melody channels
+; - noise channel (drums)
+; - 1 chord channel
+; - some patternlsit channels
+
+; chord channel: plain pointer to pitch palette
+
+; noise channel functionality
+; - state = pointer to noiseindex
+
+; melody channel functionality
+; - pointer to chord
+
+; hmm, instead of jump, we should have chInitPointers?
+; whenever hibit is encounter, reset
+
+;;; this is used by fetcher ;;;
+
+
+chStates	!byte 0,0,0,0, 0
+
+chInitPointers	
+		!byte 0 ; chData_melody-chData-1
+		!byte chData_cobass_loopstart-chData-1
+		!byte chData_bass-chData-1
+		!byte chData_drums-chData-1
+		!byte chData_chords_loopstart-chData-1
+		!byte 0;chData_melodyList_loopstart-chData-1
+
+;chPointers	!byte 0,0,0,0, 0, 0
+;chInitPointers	!byte $ff,chData_melody-chData-1,$ff,chData_drums-chData-1,chData_chords-chData-1
+;chPointers	!byte $ff
+;		!byte $ff ; chData_melody-chData-1
+;		!byte $ff
+;		!byte chData_drums-chData-1
+;		!byte chData_chords-chData-1
+chPointers	!byte 1;chData_melody-chData;1
+		!byte chData_cobass-chData
+		!byte chData_bass-chData
+		!byte chData_drums-chData
+		!byte chData_chords-chData
+		!byte 1;!byte chData_melodyList-chData
+chTempos	!byte 4*2,4,4,4*2,4*16,4*16
+chTempoCounters	!byte 9,9,9,9,9,1
+
+nOct = 2
+nBlip = 1
+nEnd = 128
+nDouble = 64
+n0 = 0
+n1 = 4 
+n2 = 8
+n3 = 12
+n4 = 16
+n5 = 20
+n6 = 24
+n7 = 28
+n8 = 32
+
+fHold = $7E
+fC = $87
+fCp = $8F
+fD = $93
+fDp = $9B
+fE = $9F
+fF = $A5
+fFp = $AB
+fG = $AF
+fGp = $B3
+fA = $B7
+fAp = $BB
+fB = $BF
+fC2 = $C3
+fD2 = $C9
+
+;	n1	bass
+;	n2	bass secondary
+;	n3 	lower
+;	n4	higher
+
+;	0 1 2  3 4
+;0	0 G G+ D A
+;1	  E E+ D G
+;2	  A A+ D G
+;3	  D D+ C F#
+
+;	  5 6  7 8
+
+;                           3 1   4   5
+;	    E & D	    D G   A   G
+;	E : D : E D E : | 0 D G D A : G  :
+; 	D : C : D C D : | 0 D A D G : F# :
+;	    D & C	    D A   G   F#
+
+
+chData
+	!byte 128
+chData_empty16
+	!byte n0+nDouble
+chData_empty14
+	!byte n0+nDouble
+chData_empty12
+	!byte n0+nDouble
+chData_empty10
+	!byte n0+nDouble
+chData_empty8
+	!byte n0+nDouble
+chData_empty6
+	!byte n0+nDouble
+chDate_empty4
+	!byte n0+nDouble
+chData_empty2
+	!byte n0+nDouble+nEnd
+
+chData_melodyPart0
+
+	!byte	n1+nBlip+nDouble
+	!byte	n3+nBlip+nDouble
+	!byte	n1+nBlip
+	!byte	n3+nBlip
+	!byte	n1+nBlip+nDouble
+
+	!byte	n0
+	!byte	n3+nBlip
+	!byte	n1+nBlip
+	!byte	n3+nBlip
+	!byte	n4+nBlip+nDouble
+	!byte	n8+nBlip+nDouble+nEnd
+
+	!byte 0 ; align
+
+chData_melodyPart1
+
+	!byte	n1+nBlip+nDouble
+	!byte	n3+nBlip+nDouble
+	!byte	n1+nBlip
+	!byte	n3+nBlip
+	!byte	n1+nBlip+nDouble
+
+	!byte	n0
+	!byte	n3+nBlip
+	!byte	n1+nBlip
+	!byte	n3+nBlip
+	!byte	n4+nBlip+nDouble
+	!byte	n4+nDouble+nEnd
+	!byte 0	; align
+
+chData_melodyPart2
+
+	!byte	n1+nBlip+nDouble
+	!byte	n3+nBlip+nDouble
+	!byte	n1+nBlip
+	!byte	n3+nBlip
+	!byte	n1+nBlip+nDouble
+
+	!byte	n1+nBlip+nDouble
+	!byte	n1+nDouble
+	!byte	n1+nDouble
+	!byte	n0+nDouble+nEnd
+
+	!byte 0,0,0 ;align
+
+chData_bass
+	!byte n1+nOct
+	!byte n0
+	!byte n1
+	!byte n0+nEnd
+chData_cobass:
+chData_cobass_loopstart
+	!byte n0+nDouble
+	!byte n0+nDouble
+chData_cobass_loopstart_halfwild
+	!byte n0+nDouble
+	!byte n0+nDouble
+	!byte n0+nDouble
+	!byte n0+nDouble
+;	!byte n0+nDouble
+;	!byte n0+nDouble
+;	!byte n0+nDouble
+;	!byte n0+nDouble
+;	!byte n0+nDouble
+;	!byte n0+nDouble
+;	!byte n0+nDouble
+;	!byte n0+nDouble
+chData_cobass_loopstart_wild
+	!byte n2+nBlip
+	!byte n2+nBlip
+	!byte n1+nOct+nBlip
+	!byte n2+nBlip+nEnd
+
+chData_melodyList
+	!byte (chData_empty16 - chData - 1)/4 +nDouble
+	!byte (chData_empty16 - chData - 1)/4 +nDouble
+	!byte (chData_empty16 - chData - 1)/4 +nDouble
+	!byte (chData_empty16 - chData - 1)/4 +nDouble
+chData_melodyList_loopstart
+	!byte (chData_melodyPart1 - chData - 1)/4
+	!byte (chData_melodyPart2 - chData - 1)/4
+	!byte (chData_melodyPart1 - chData - 1)/4
+	!byte (chData_melodyPart2 - chData - 1)/4 +nEnd
+	!byte (chData_melodyPart0 - chData - 1)/4
+	!byte (chData_melodyPart0 - chData - 1)/4
+	!byte (chData_melodyPart0 - chData - 1)/4
+	!byte (chData_melodyPart0 - chData - 1)/4 + nEnd
+
+
+chData_drums
+chData_drums_lazy
+	!byte 7,0,nDouble,nDouble,nDouble+nEnd
+	!byte $80 ; 5,0,0,0, 1,0,0,0+128
+;	!byte 5,5,1,5, 5,5,1,5, 5,5,1,5, 5,5,7,7+128
+chData_drums_wild
+	!byte 7+64,0+64,1+64,0+64,7+64,1+64,1+64,7,7+128
+
+chData_chords
+;	!byte 1,0,3,2
+;	!byte 1,0,3,2
+chData_chords_loopstart
+	!byte 1,0,3,2
+	!byte 1,0,3,2
+chData_chords_loopstart_hionly
+	!byte 5,4,7,6
+	!byte 5,4,7,6+128
+
+!warn "chData length = ", *-chData
+
+; reset = 128
+; double = 64
+
+; melodychans:
+; - 1  blip
+; - 2  +octave
+; - 0=pitchindex 0, 4=pitchindex 1 etc.
+
+;	0 = silence
+;	1 = basenote
+;	2 = basenote+1
+pitches
+;	!byte $7E,fE,fE+1,$9B;,$AF
+;	!byte $7E,fG,fG+1,$AF;,$BB
+;	!byte $7E,fD,fD+1,$7e;,$7e
+;	!byte $7E,fA,fA+1,$7e
+;	!byte $7E,fG,fG+1,$7e
+;	!byte $7e,fAp,fAp+1,$7e
+;	!byte $7e,fF,fF+1,$7e
+;	!byte $7e,fC2,fC2+1,$7e
+
+	!byte $7E,fG,fG+1,fD,fA
+	!byte     fE,fE+1,fD,fG
+	!byte     fA,fA+1,fD,fG
+	!byte	  fD,fD+1,fC,fFp
+
+	!byte     fC2,fC2+1,fG,fD2
+	!byte     fA,fA+1,fG,fC2
+	!byte     fD2,fD2+1,fG,fC2
+	!byte	  fG,fG+1,fF,fB
+
+	!byte	fB,fB,fB,fB
+
+
+;	0 1 2  3 4
+;0	0 G G+ D A
+;1	  E E+ D G
+;2	  A A+ D G
+;3	  D D+ C F#
+
+voiceWaves
+	!byte $00,$00,$40
+noiseTable
+;0
+        !byte 126,126,0
+	!byte 0
+;4
+        !byte 250,200,240,160,230,130
+        !byte 180,128,220,126,130,126
+        !byte 126,130,126,0
+;20
+        !byte 210,180,160,140,126,130,126,0
+;28
+        !byte 250,200,240,250,220,240 ; 160,230,130
+        !byte 250,200,240,160,230,130
+        !byte 250,200,240,160,230,130
+        !byte 250,200,240,160,230,130
+        !byte 180,128,220,126,130,126
+        !byte 160,130,126,0
+}
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+!zone musicplayer
+
+numberOfChannels=5
+numberOfMelodyChannels=3
+chidxNoise=3
+chidxChord=4
+
+voiceTmp=$f4
+
+; how to make orderlists: override InitPointers
+; PROBLEM: range is up to 64, melody may not fit
+; chidxLeadOrder
+; chidxBassOrder
+; chidxDrumOrder
+
+musicplayer:
+  	;;; FETCH CHANNEL STATES ;;;
+
+	ldx #numberOfChannels-1
+
+	; tempo subdivide
+
+.l0	dec chTempoCounters,x
+	bne .nextCh
+
+	; fetch data & increment pointer.
+	; bit7=1 resets pointer instead of incrementing
+
+.incPtr	ldy chPointers,x
+	lda chData,y
+	bpl .c1
+	ldy chInitPointers,x
+.c1	iny
+	pha	; BLAEAEH
+	tya
+	sta chPointers,x
+	pla
+
+	asl	; channel state between 0..255, step 4
+	asl
+	sta chStates,x
+
+	; reset tempocounter, bit0=1 doubles waitlength
+
+	lda chTempos,x
+	bcc .c2	
+	asl
+.c2	sta chTempoCounters,x
+
+.nextCh	dex
+	bpl .l0
+
+	;;; PROCESS CHANNEL STATES ;;;
+
+	;;; NOISE CHANNEL ;;;
+
+	ldx chStates+chidxNoise
+	lda noiseTable,x
+	beq .nonoise
+	inc chStates+chidxNoise
+	sta $900d
+.nonoise
+
+	;;; MELODY CHANNELS ;;;
+
+	ldx #numberOfMelodyChannels-1
+
+.l9	lda chStates,x
+	lsr
+	lsr
+	lsr
+	php
+	lsr
+	php
+	clc
+	beq .silent
+	adc chStates+chidxChord
+.silent	tay
+	lda pitches,y
+	plp
+	bcc .c0			; hibit = do octaveblip
+	ror
+.c0	plp
+	bcc .c9
+	ror
+.c9
+	; TODO setwave
+	pha;sta voiceTmp,x  ; ->pha?
+
+	lda chStates,x
+	and #$F8
+	sta chStates,x
+
+	dex
+	bpl .l9
+
+	ldy #$c
+.l3	pla
+	tax ; ldx voiceTmp-$a,y ; ->pla?
+	lda $9000,y
+	bmi .nowave
+	lda voiceWaves-$a,y
+	bne .setwave
+.nowave
+	txa
+	sta $9000,y
+	jmp .nextVc
+.setwave
+	; x = initfreq
+	; y = channel (a/b/c)
+	; a = waveform
+        TMP=$ff
+        TMP2=$fe
+
+        stx .initfreq   ; 4
+
+.waved  sty .ch0        ; 4
+        sty .ch1        ; 4
+        ldx .ldfqmasks-$a,y ; 4
+        sta TMP         ; 3
+
+        ora #$7f        ; 2
+
+        sax $900c       ; 4  [$900c] = a AND x
+        .ch0=*-2
+        sty TMP2        ; 3
+        ldy #7          ; 2
+
+.l6     lda #$7f        ; 2
+        slo TMP         ; 5  asl tmp; a = [tmp] OR $7f
+        sax $900c       ; 4  [$900c] = a AND x
+
+        .ch1=*-2                 
+        dey             ; 2
+        bne .l6         ; 3
+
+        lda #128        ; 2
+        .initfreq=*-1
+        nop             ; 2
+        ldy TMP2        ; 3
+.noset: sta $9000,y     ; 5
+
+.nextVc	dey
+	cpy #$9
+	bne .l3
+	rts
+
+.ldfqmasks:
+     !byte $fe  ; $900a - 1 x 16 clocks/bit
+     !byte $fd  ; $900b - 2 x  8 clocks/bit
+     !byte $fb  ; $900c - 4 x  4 clocks/bit
+     !byte $fe
+
+; blippiness:
+
+; blip: if 
+
+; chState will be anded by something that turns blip off
+
+; noise channel: state = pointer to noisetable. incremented.
+; 3 melody 
+
+; melody channel:.
+; - lookup pitch: low n bits of 
+
+; - blip: 
+; - octaveup: inc, 
+
+; first, lookup 
+
+; blip logic:
+
+; channels:
+; - 3 melody channels
+; - noise channel (drums)
+; - 1 chord channel
+; - some patternlsit channels
+
+; chord channel: plain pointer to pitch palette
+
+; noise channel functionality
+; - state = pointer to noiseindex
+
+; melody channel functionality
+; - pointer to chord
+
+; hmm, instead of jump, we should have chInitPointers?
+; whenever hibit is encounter, reset
+
+;;; this is used by fetcher ;;;
+
+
+chStates	!byte 0,0,0,0, 0
+
+chInitPointers	
+		!byte 0 ; chData_melody-chData-1
+		!byte chData_cobass_loopstart-chData-1
+		!byte chData_bass-chData-1
+		!byte chData_drums-chData-1
+		!byte chData_chords_loopstart-chData-1
+		;!byte 0;chData_melodyList_loopstart-chData-1
+
+;chPointers	!byte 0,0,0,0, 0, 0
+;chInitPointers	!byte $ff,chData_melody-chData-1,$ff,chData_drums-chData-1,chData_chords-chData-1
+;chPointers	!byte $ff
+;		!byte $ff ; chData_melody-chData-1
+;		!byte $ff
+;		!byte chData_drums-chData-1
+;		!byte chData_chords-chData-1
+chPointers	!byte 1;chData_melody-chData;1
+		!byte chData_cobass-chData
+		!byte chData_bass-chData
+		!byte chData_drums-chData
+		!byte chData_chords-chData
+		;!byte 1;!byte chData_melodyList-chData
+chTempos	!byte 4*2,4,4,4*2,4*16;,4*16
+chTempoCounters	!byte 9,9,9,9,9;,1
+
+!if (1=2) {
+chInitPointers
+		!byte 0;chData_melodyPart0-chData-1
+		!byte chData_cobass_loopstart_wild-chData-1
+		!byte chData_bass-chData-1
+		!byte chData_drums_lazy-chData-1
+		!byte chData_chords_loopstart-chData-1
+		;!byte chData_melodyList_loopstart-chData-1
+chPointers	!byte 1;chData_melodyPart0-chData;1
+		!byte chData_cobass_loopstart_wild-chData
+		!byte chData_bass-chData
+		!byte chData_drums_wild-chData
+		!byte chData_chords-chData
+		;!byte chData_melodyList_loopstart-chData-1
+chTempos	!byte 4*2,4,4,4*2,4*16;4*16
+chTempoCounters	!byte 9,9,9,9,9;1
+}
+
+!if (1=2) {
+chInitPointers	
+		!byte 0 ; chData_melody-chData-1
+		!byte chData_cobass_loopstart_wild-chData-1
+		!byte chData_bass-chData-1
+		!byte chData_drums-chData-1
+		!byte chData_chords_loopstart_hionly-chData-1
+		;!byte 0;chData_melodyList_loopstart-chData-1
+
+chPointers	!byte 1;chData_melody-chData;1
+		!byte chData_cobass_loopstart_wild-chData
+		!byte chData_bass-chData
+		!byte chData_drums-chData
+		!byte chData_chords_loopstart_hionly-chData
+		;!byte 1;!byte chData_melodyList-chData
+chTempos	!byte 4*2,4,4,4*2,4*16;,4*16
+chTempoCounters	!byte 9,9,9,9,9;,1
+}
+voiceWaves
+	!byte $00,$00,$40
+
+nOct = 2
+nBlip = 1
+nEnd = 128
+nDouble = 64
+n0 = 0
+n1 = 4 
+n2 = 8
+n3 = 12
+n4 = 16
+n5 = 20
+n6 = 24
+n7 = 28
+n8 = 32
+
+fHold = $7E
+fC = $87
+fCp = $8F
+fD = $93
+fDp = $9B
+fE = $9F
+fF = $A5
+fFp = $AB
+fG = $AF
+fGp = $B3
+fA = $B7
+fAp = $BB
+fB = $BF
+fC2 = $C3
+fD2 = $C9
+
+chData
+	!byte 128
+chData_empty16
+	!byte n0+nDouble
+chData_empty14
+	!byte n0+nDouble
+chData_empty12
+	!byte n0+nDouble
+chData_empty10
+	!byte n0+nDouble
+chData_empty8
+	!byte n0+nDouble
+chData_empty6
+	!byte n0+nDouble
+chDate_empty4
+	!byte n0+nDouble
+chData_empty2
+	!byte n0+nDouble+nEnd
+
+chData_melodyPart0
+
+	!byte	n1+nBlip+nDouble
+	!byte	n3+nBlip+nDouble
+	!byte	n1+nBlip
+	!byte	n3+nBlip
+	!byte	n1+nBlip+nDouble
+
+	!byte	n0
+	!byte	n3+nBlip
+	!byte	n1+nBlip
+	!byte	n3+nBlip
+	!byte	n4+nBlip+nDouble
+	!byte	n8+nBlip+nDouble+nEnd
+
+;	!byte 0 ; align
+
+chData_melodyPart1
+
+	!byte	n1+nBlip+nDouble
+	!byte	n3+nBlip+nDouble
+	!byte	n1+nBlip
+	!byte	n3+nBlip
+	!byte	n1+nBlip+nDouble
+
+	!byte	n0
+	!byte	n3+nBlip
+	!byte	n1+nBlip
+	!byte	n3+nBlip
+	!byte	n4+nBlip+nDouble
+	!byte	n4+nDouble
+	!byte	n1+nBlip+nDouble
+	!byte	n3+nBlip+nDouble
+	!byte	n1+nBlip
+	!byte	n3+nBlip
+	!byte	n1+nBlip+nDouble
+
+	!byte	n1+nBlip+nDouble
+	!byte	n1+nDouble
+	!byte	n1+nDouble
+	!byte	n0+nDouble+nEnd
+
+chData_bass
+	!byte n1+nOct
+	!byte n0
+	!byte n1
+	!byte n0+nEnd
+chData_cobass:
+chData_cobass_loopstart
+	!byte n0+nDouble
+	!byte n0+nDouble
+chData_cobass_loopstart_halfwild
+	!byte n0+nDouble
+	!byte n0+nDouble
+	!byte n0+nDouble
+	!byte n0+nDouble
+;	!byte n0+nDouble
+;	!byte n0+nDouble
+;	!byte n0+nDouble
+;	!byte n0+nDouble
+;	!byte n0+nDouble
+;	!byte n0+nDouble
+;	!byte n0+nDouble
+;	!byte n0+nDouble
+chData_cobass_loopstart_wild
+	!byte n2+nBlip
+	!byte n2+nBlip
+	!byte n1+nOct+nBlip
+	!byte n2+nBlip+nEnd
+
+;chData_melodyList
+;;	!byte (chData_empty16 - chData - 1)/4 +nDouble
+;;	!byte (chData_empty16 - chData - 1)/4 +nDouble
+;chData_melodyList_delay4
+;	!byte (chData_empty16 - chData - 1)/4 +nDouble
+;chData_melodyList_delay2
+;	!byte (chData_empty16 - chData - 1)/4 +nDouble
+;chData_melodyList_loopstart
+;	!byte (chData_melodyPart0 - chData - 1)/4
+;	!byte (chData_melodyPart0 - chData - 1)/4
+;	!byte (chData_melodyPart0 - chData - 1)/4
+;	!byte (chData_melodyPart0 - chData - 1)/4
+;	!byte (chData_melodyPart2 - chData - 1)/4
+;	!byte (chData_melodyPart1 - chData - 1)/4 + nEnd
+;;	!byte (chData_melodyPart1 - chData - 1)/4
+;;	!byte (chData_melodyPart2 - chData - 1)/4 + nEnd
+
+chData_drums
+chData_drums_lazy
+	!byte 7,0,nDouble,nDouble,nDouble+nEnd
+	!byte $80 ; 5,0,0,0, 1,0,0,0+128
+;	!byte 5,5,1,5, 5,5,1,5, 5,5,1,5, 5,5,7,7+128
+chData_drums_wild
+	!byte 7,7,0,1,0,5,1,5
+	!byte 7,7,1,5,1,5,1,5+128
+
+;	!byte 7+64,0+64,1+64,0+64,7+64,1+64,1+64,7,7+128
+
+chData_chords
+;	!byte 1,0,3,2
+;	!byte 1,0,3,2
+chData_chords_loopstart
+	!byte 1,0,3,2
+	!byte 1,0,3,2
+chData_chords_loopstart_hionly
+	!byte 5,4,7,6
+	!byte 5,4,7,6+128
+chData_chords_end
+
+!warn "chData length = ", *-chData
+
+; reset = 128
+; double = 64
+
+; melodychans:
+; - 1  blip
+; - 2  +octave
+; - 0=pitchindex 0, 4=pitchindex 1 etc.
+
+;	0 = silence
+;	1 = basenote
+;	2 = basenote+1
+pitches
+;	!byte $7E,fE,fE+1,$9B;,$AF
+;	!byte $7E,fG,fG+1,$AF;,$BB
+;	!byte $7E,fD,fD+1,$7e;,$7e
+;	!byte $7E,fA,fA+1,$7e
+;	!byte $7E,fG,fG+1,$7e
+;	!byte $7e,fAp,fAp+1,$7e
+;	!byte $7e,fF,fF+1,$7e
+;	!byte $7e,fC2,fC2+1,$7e
+
+	!byte $7E,fG,fG+1,fD,fA
+	!byte     fE,fE+1,fD,fG
+	!byte     fA,fA+1,fD,fG
+	!byte	  fD,fD+1,fC,fFp
+
+	!byte     fC2,fC2+1,fG,fD2
+	!byte     fA,fA+1,fG,fC2
+	!byte     fD2,fD2+1,fG,fC2
+	!byte	  fG,fG+1,fF,fB
+
+	!byte	fB,fB,fB,fB
+
+noiseTable
+;0
+        !byte 126,126,0
+	!byte 0
+;4
+        !byte 250,200,240,160,230,130
+        !byte 180,128,220,126,130,126
+        !byte 126,130,126,0
+;20
+        !byte 210,180,160,140,126,130,126,0
+;28
+        !byte 250,200,240,250,220,240 ; 160,230,130
+        !byte 250,200,240,160,230,130
+        !byte 250,200,240,160,230,130
+        !byte 250,200,240,160,230,130
+        !byte 180,128,220,126,130,126
+        !byte 160,130,126,0
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+!zone waitframe
+keeploading:
+	jsr waitframe
+	jsr loader_irq
+	jmp keeploading
+
+	; loader_loop has: jsr loader_on, then loop loader_irq
+
+waitframe:
+	pha
+	txa
+	pha
+	tya
+	pha
+	lda #20
+	.piff=*-1
+	clc
+	adc #16
+.l2	cmp $9004
+	bne .l2
+.l3	cmp $9004
+	beq .l3
+	inc $900f
+	jsr musicplayer
+	dec $900f
+	pla
+	tay
+	pla
+	tax
+	pla
+
+	inc .piff
+	.poff=*-3
+	bpl .rtzz
+
+	lda .poff
+	eor #$20 ; ($c0 ^ $e0)
+	sta .poff
+.rtzz	rts
+
+!zone mc
+
+startpart_end:
+mcstart:
+	sei
+	lda #8
+	sta $900e
+	jsr initloader
+
+	jsr readtypoword
+
+	lda #8
+	sta $900f
+
+	jsr readtypoword
+
+	lda #chData_cobass_loopstart_halfwild-chData-1
+	sta chInitPointers+1
+	lda #$20
+	sta voiceWaves+1
+
+	jsr readtypoword
+
+	lda #nDouble+nEnd
+	sta chData_drums_lazy+2
+	lda #$10
+	sta voiceWaves+1
+
+	jsr readtypoword
+
+	lda #chData_cobass_loopstart_wild-chData-1
+	sta chInitPointers+1
+	lda #0
+	sta voiceWaves+1
+	lda #chData_chords_loopstart_hionly-chData-1
+	sta chInitPointers+4
+
+	jsr readtypoword
+
+	jmp startloading;keeploading
+
+readtypoword
+
+.l0	;inc $900f
+	jsr readtypochar
+	;dec $900f
+	cmp #0
+	beq .rts
+
+	;inc $900f
+	jsr $ffd2
+	;dec $900f
+
+	cpy #0
+	beq .l0
+
+	ldx #0
+.l1
+	txa
+	and #16
+	bne .c1
+
+	lda #18
+	;inc $900f
+	jsr $ffd2
+	;dec $900f
+.c1
+	;inc $900f
+	lda #32
+	jsr $ffd2
+	lda #157
+	jsr $ffd2
+	lda #146
+	jsr $ffd2
+	;dec $900f
+
+	sei
+	jsr waitframe
+
+	inx
+	dey
+	bne .l1
+
+	;inc $900f
+	lda #32
+	jsr $ffd2
+	lda #157
+	jsr $ffd2
+	;dec $900f
+
+	jmp .l0
+
+	; after this, n frames of cursorflash
+
+.rts	rts
+
+
+readtypochar
+	jsr readbyte
+	tay
+	jsr readbyte
+	rts
+
+readbyte
+	lda typostuff
+	.ptr=*-2
+	inc .ptr
+	bne .rts
+	inc .ptr+1
+	rts
+
+typostuff
+	!byte 0, 13
+	!byte 0, 82
+	!byte 0, 69
+	!byte 0, 65
+	!byte 0, 68
+	!byte 0, 89
+	!byte 0, 46
+	!byte 60, 13
+	!byte 6, 80
+	!byte 3, 79
+	!byte 4, 75
+	!byte 6, 69
+	!byte 5, 51
+	!byte 4, 54
+	!byte 5, 56
+	!byte 3, 55
+	!byte 4, 57
+	!byte 3, 44
+	!byte 12, 56
+	!byte 0, 13
+	!byte 0,  0
+
+	!byte 0, 13
+	!byte 0, 82
+	!byte 0, 69
+	!byte 0, 65
+	!byte 0, 68
+	!byte 0, 89
+	!byte 0, 46
+	!byte 44, 13
+	!byte 33, 5 
+	!byte 8, 32
+	!byte 7, 32
+	!byte 6, 13
+	!byte 6, 13
+	!byte 7, 13
+	!byte 6, 32
+	!byte 20, 32
+	!byte 44, 147
+
+	!byte 5,'H',5,'E',5,'L',5,'L',5,'O',11,'!'
+
+	!byte 4,13
+	!byte 30,13
+	!byte 10,0
+
+!byte 6,'N'
+!byte 2,'O'
+!byte 4,' '
+!byte 3,'H'
+!byte 3,'I'
+!byte 4,'G'
+!byte 3,'H'
+!byte 5,' '
+!byte 2,'A'
+!byte 3,'R'
+!byte 3,'T'
+!byte 5,' '
+!byte 3,'T'
+!byte 6,'H'
+!byte 5,'I'
+!byte 3,'S'
+!byte 3,' '
+!byte 2,'T'
+!byte 4,'I'
+!byte 5,'M'
+!byte 4,'E'
+!byte 2,','
+!byte 11,'N'
+!byte 2,'O'
+!byte 3,' '
+!byte 4,'F'
+!byte 5,'A'
+!byte 3,'N'
+!byte 2,'C'
+!byte 6,'Y'
+!byte 4,' '
+!byte 5,'M'
+!byte 2,'U'
+!byte 6,'S'
+!byte 3,'I'
+!byte 2,'C'
+!byte 5,' '
+!byte 3,'V'
+!byte 5,'I'
+!byte 3,'D'
+!byte 3,'E'
+!byte 4,'O'
+!byte 3,'S'
+!byte 7,'.'
+!byte 11,13
+;!byte 2,0
+!byte 12,13
+!byte 4,'T'
+!byte 3,'H'
+!byte 4,'E'
+!byte 4,' '
+!byte 5,'L'
+!byte 3,'A'
+!byte 5,'S'
+!byte 6,'T'
+!byte 6,' '
+!byte 3,'S'
+!byte 6,'E'
+!byte 3,'C'
+!byte 4,'R'
+!byte 5,'E'
+!byte 3,'T'
+!byte 3,'S'
+!byte 5,' '
+!byte 4,'O'
+!byte 3,'F'
+!byte 3,13
+;!byte 3,0
+!byte 5,'T'
+!byte 4,'H'
+!byte 4,'E'
+!byte 5,' '
+!byte 6,'V'
+!byte 4,'I'
+!byte 4,'C'
+!byte 4,'-'
+!byte 3,'2'
+!byte 3,'0'
+!byte 2,' '
+!byte 4,'H'
+!byte 5,'A'
+!byte 3,'R'
+!byte 4,'D'
+!byte 3,'W'
+!byte 5,'A'
+!byte 3,'R'
+!byte 4,'E'
+!byte 3,13
+!byte 4,'H'
+!byte 5,'A'
+!byte 5,'V'
+!byte 5,'E'
+!byte 5,' '
+!byte 3,'F'
+!byte 4,'I'
+!byte 5,'N'
+!byte 2,'A'
+!byte 4,'L'
+!byte 3,'L'
+!byte 5,'Y'
+!byte 5,' '
+!byte 3,'B'
+!byte 6,'E'
+!byte 4,'E'
+!byte 3,'N'
+!byte 2,13
+!byte 5,'D'
+!byte 3,'I'
+!byte 3,'S'
+!byte 6,'C'
+!byte 4,'O'
+!byte 3,'V'
+!byte 4,'E'
+!byte 5,'R'
+!byte 3,'E'
+!byte 4,'D'
+!byte 22,'.'
+!byte 13,13
+!byte 10,0
+
+!byte 7,13
+!byte 6,'A'
+!byte 4,'L'
+!byte 7,'L'
+!byte 3,' '
+!byte 4,'C'
+!byte 5,'O'
+!byte 4,'D'
+!byte 6,'E'
+!byte 6,','
+!byte 3,' '
+!byte 4,'M'
+!byte 5,'U'
+!byte 3,'S'
+!byte 4,'I'
+!byte 4,'C'
+!byte 3,13
+!byte 3,'A'
+!byte 4,'N'
+!byte 6,'D'
+!byte 5,' '
+!byte 6,'G'
+!byte 4,'F'
+!byte 4,'X'
+!byte 4,' '
+!byte 3,'B'
+!byte 2,'Y'
+!byte 6,' '
+!byte 2,0
+!byte 7,'V'
+!byte 3,'I'
+!byte 4,'Z'
+!byte 4,'N'
+!byte 3,'U'
+!byte 2,'T'
+!byte 3,'.'
+!byte 11,13
+!byte 13,13
+!byte 6,'P'
+!byte 4,'W'
+!byte 3,'P'
+!byte 5,' '
+!byte 6,'P'
+!byte 5,'R'
+!byte 3,'O'
+!byte 3,'U'
+!byte 4,'D'
+!byte 3,'L'
+!byte 5,'Y'
+!byte 4,' '
+!byte 4,'P'
+!byte 3,'R'
+!byte 3,'E'
+!byte 4,'S'
+!byte 5,'E'
+!byte 4,'N'
+!byte 3,'T'
+!byte 4,'S'
+!byte 3,':'
+!byte 2,13
+!byte 20,13
+!byte 3,'*'
+!byte 4,' '
+!byte 5,'I'
+!byte 4,'M'
+!byte 7,'P'
+!byte 7,'O'
+!byte 6,'S'
+!byte 7,'S'
+!byte 4,'I'
+!byte 7,'B'
+!byte 3,'L'
+!byte 5,'A'
+!byte 3,'T'
+!byte 3,'O'
+!byte 4,'R'
+!byte 3,' '
+!byte 4,'3'
+!byte 7,' '
+!byte 3,'*'
+!byte 3,' '
+!byte 31,13
+!byte 9,13
+!byte 9,13
+!byte 2,'L'
+!byte 3,'O'
+!byte 3,'A'
+!byte 2,'D'
+!byte 2,'I'
+!byte 6,'N'
+!byte 3,'G'
+!byte 3,' '
+!byte 3,'.'
+!byte 6,'.'
+!byte 3,'.'
+
+!byte 0,0
+
+;!zone main
+;mcstart:
+
+;;;;;;;;;;; do some i/o inits ;;;;;;;;;;;
+
+initloader
+
+
+!zone clrscr		 ; invisible testspace
+
+	jsr CLALL
+	jsr IOINIT
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;; initialize loader ;;;;;;;;;;;;;;
+
+;!if(DEVMODE=0) {
+	jsr upload_drivecode
+;}
+	sei
+	lda #$dd
+	sta $912c
+	lda #$7e
+	sta $911f
+
+;;;;;;;;;;;;;;; start loading (with timeout) ;;;;;;;;;;;;;;;;;;;;
+
+	; set int vectorzz
+
+
+	rts
+
+	;;;	
+
+;	lda #0
+;	sta 255
+
+;.l8	;lda 255
+	;lsr
+	;lsr
+	;lsr
+	;lsr
+	;ora #$08
+	;tax
+
+startloading
+	sei
+	jsr copy_loadercode
+	jsr loader_on
+;	ldx #from30con_end-from30con
+;.l00x	lda from30con,x
+;	sta $30c,x
+;	dex
+;	bpl .l00x
+	jmp keeploading
+
+drive_error:
+
+.hooo	ldx #10
+.hoo	jsr waitframe
+	dex
+	bne .hoo
+
+	lda $900f
+	eor #$02
+	sta $900f
+	jmp .hooo
+
+from30con:
+	inc $9002	; 3
+	jmp from30con	; 3
+	nop		; 1
+	nop		; 1
+	!byte <from30con,>from30con
+	!byte <from30con,>from30con
+	!byte <from30con,>from30con
+from30con_end:
+
+;;;;;;;;;;;;;;;;;; LOAD DRIVE CODE ;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+!zone upload_drivecode
+
+AMOUNT=20	; bytes per M-W command
+
+upload_drivecode:
+
+	lda #<drivecode
+	sta 251
+	lda #>drivecode
+	sta 252
+	lda #<driveside
+	sta mwcmd+2
+	lda #>driveside
+	sta mwcmd+1
+
+	ldx $ba
+	bne .defd
+	ldx #8
+.defd	ldy #15
+	tya
+	jsr SETLFS
+	lda #0
+	jsr SETNAM
+	jsr OPEN
+	bcs drive_error
+
+.mwloop:
+	ldx #15
+	jsr CHKOUT
+	bcs drive_error
+
+	ldy #mwcmd_lgt
+.smwcmd:
+	lda mwcmd-1,y		; ok  M-W<targaddr><lgt>
+	jsr CHROUT
+	dey			; ok
+	bne .smwcmd		; ok
+
+;	ldy #0
+.mwbyte:
+	lda (251),y		;	ja per‰‰n dataa
+	jsr CHROUT
+
+	iny
+	cpy #AMOUNT
+	bne .mwbyte
+
+	jsr CLRCHN
+
+; update the addresses
+	clc			; mwbyte+=20
+	lda 251
+	adc #AMOUNT
+	sta 251
+	bcc .c1
+	   clc
+	   inc 252
+.c1	lda mwcmd + 2		; mwcmd+=20 until at drivecode_end
+	adc #AMOUNT
+	sta mwcmd + 2
+	tax
+	lda #0
+	adc mwcmd + 1
+	sta mwcmd + 1
+	cpx #<driveside_end
+	sbc #>driveside_end
+	bcc .mwloop
+
+	ldx #15
+	jsr CHKOUT
+	lda #"U"
+	jsr CHROUT	; ciwait
+	lda #"3"
+	jsr CHROUT	; ciwait
+	jmp CLRCHN
+
+mwcmd:
+	!text AMOUNT,>driveside,<driveside,"W-M"
+mwcmd_lgt = *-mwcmd
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+!zone copy_loadercode
+copy_loadercode:
+
+	ldx #loader_lgt
+
+.l0	lda loader_code-1,x
+	sta $031f,x
+	dex
+	bne .l0
+
+	rts
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+loader_code:
+!if(DEVMODE=0) {
+   !bin "loader.bin"
+} else {
+   !bin "loader_dev.bin"
+}
+loader_lgt=*-loader_code
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+drivecode:
+!bin "driveside.bin"
+drivecode_lgt=*-drivecode
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+*=$1800
+	jmp mcstart

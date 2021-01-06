@@ -1,0 +1,1554 @@
+!to "brickshop.prg"
+*=$1001
+
+!byte $0B,$10
+!word ras1-ras0
+!byte $9E
+!byte $30+(mcstart/1000)
+!byte $30+((mcstart-(mcstart/1000)*1000)/100)
+!byte $30+((mcstart-(mcstart/100) *100) /10)
+!byte $30+((mcstart-(mcstart/10)  *10)  /1)
+
+!byte 0,0,0
+
+;;; some rom consts ;;;
+
+SCNKEY=$ff9f
+RESET=64802
+
+;;; some settings ;;;
+
+SCRWIDTH=25
+SCRHEIGHT=20
+
+KEYDELAY=8
+REPDELAY=1
+
+CHARSETMASK=$7F
+
+OPT_HIDE=0
+OPT_SCROLL=0
+
+CHARPAGE=$18
+SCRPAGE =$1c
+COLPAGE =$94
+
+raster0=$1700
+raster1=$1f00
+
+;;;;;;;;;;;;;;;;;;;;;;
+
+SETLFS=$ffba
+SETNAM=$ffbd
+OPEN  =$ffc0
+CHKOUT=$ffc9
+CHROUT=$ffd2
+CHKIN =$ffc6
+CHRIN =$ffcf
+CLOSE =$ffc3
+CLALL =$ffe7
+IOINIT=$fdf9
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+tmp=255
+tmp2=254
+charaddr=252
+blinkstate=229
+pixptr_x=250
+pixptr_y=249
+scraddr=247
+charidx=236
+
+charaddr1=240
+tmpaddr=240
+
+coladdr=238
+color=237
+
+rastptr=235
+rasthome=234
+xcharptr=233
+
+keyrate=232
+lastkey=231
+toolchar0=230
+
+optype=0	; 0=read, 1=write
+copyptr=1
+hidemode=3
+tmp3=251
+msgptr=227
+
+messages:
+msg_done	!scrxor $80,"DONE"
+msg_none	!scr "     "
+msg_error	!scrxor $80,"ERROR"
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;;;;;;;;; routines for tool area drawing (zoomed char, charset etc)
+
+!zone frame
+frame:
+!if (OPT_HIDE) {
+	lda hidemode
+	beq .nohide
+	    jsr drawframe_hide
+	    lda #0
+	    tax
+.fl0	    sta $9400,x
+	    dex
+	    bne .fl0
+	    jmp SCNKEY
+}
+	; max 12 chars of msg
+
+	ldx #4
+.ml0	lda msg_none,x
+	    msgsrc=*-2
+	sta $1c00,x
+	dex
+	bpl .ml0
+
+.nohide lda $9004
+	bpl .nh00	; already at 0..127: non-idle - skip tool drawings
+	    jsr drawtools
+.nh00	jsr drawframe
+	jmp SCNKEY
+
+!zone drawtools
+drawtools:
+	lda #0
+	.ctr=*-1
+	dec .ctr
+	and #1
+	beq drawzoom
+
+!zone drawtoolcolors
+drawtoolcolors:
+
+	lda #1
+	ldx #0
+.l1	sta $9400,x
+	inx
+	cpx #50
+	bne .l1
+
+	lda color
+	ldx #50
+.l2	sta $9400,x
+	inx
+	bne .l2
+	rts
+
+!zone drawzoom
+drawzoom:
+
+	lda #2*25
+	sta charaddr1
+	lda #$1c
+	sta charaddr1+1
+	;rts
+
+	lda toolchar0
+	sta tmp
+
+	ldx #0
+.l1	lda color
+	cmp #8
+
+	txa
+	tay
+	lda (charaddr),y
+
+	ldy #7
+	bcs .l0b
+
+.l0	lsr
+	pha
+	lda #0
+	bcc .c0
+	lda #3
+.c0	sta (charaddr1),y
+	pla
+	dey
+	bpl .l0
+	bmi .l0done
+
+.l0b	pha
+	and #3
+	sta (charaddr1),y
+	dey
+	sta (charaddr1),y
+	pla
+	lsr
+	lsr
+	dey
+	bpl .l0b
+
+	ldy #8
+	lda #3 ; 4
+	sta (charaddr1),y
+
+	lda tmp
+.l4	iny
+	sta (charaddr1),y
+	clc
+	adc #1
+	cpy #24
+	bne .l4
+	and #CHARSETMASK
+	sta tmp
+
+.l0done	clc
+	lda charaddr1
+	adc #25
+	sta charaddr1
+
+	inx
+	cpx #8
+	bne .l1
+	rts
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;;;;;;;;; routines for cursor movement
+
+!zone movebypixel
+movebypixel:	; (pixptr_x,pixptr_y) += dirtable[y]
+		; component modulo 8, ifz do movebycell
+		; y vals 0,1,2,3,4 (right,left,down,up,none)
+
+	ldx .pixdirregs,y
+	clc
+
+	lda #8
+	bit color
+	beq .c0
+	    lda pixptr_x
+	    and #6
+	    sta pixptr_x
+
+	    lda $00,x
+	    adc .pixdirvals,y
+	    jmp .c1
+
+.c0	lda $00,x
+	adc .pixdirvals+2,y
+
+.c1	bmi .bound
+	cmp #8
+	bcs .bound
+
+	and #7
+	sta $00,x
+	rts
+
+.pixdirregs !byte pixptr_x,pixptr_x,pixptr_y,pixptr_y
+.pixdirvals !byte $02,$fe, $01,$ff,$01,$ff ; ,$00
+
+.bound	and #7
+	sta $00,x
+	;jmp movebycell
+
+;;; ;;; ;;;
+
+!zone movebycell
+movebycell:	; scraddr += celldirtable[y];
+		; if crosses limits then y^=1 and redo
+		; y vals 0,1,2,3,4 (right,left,down,up,none)
+
+.l0	; TODO: check screenmode vs charmode (when we have upper area)
+	; TODO: jsr exitcell (when allocs)
+
+	tya
+	pha
+	jsr exitcell
+	pla
+	tay
+
+movebycell_noexit:
+
+	lda xcharptr
+	clc
+	adc .cellxcdirs,y
+	bpl .z0
+	    dec rastptr
+	    lda #24
+	    bne .z1
+.z0	cmp #25
+	bne .z1
+	    inc rastptr
+	    lda #0
+.z1	sta xcharptr
+
+	lda rastptr
+	clc
+	adc .cellrpdirs,y
+	sta rastptr
+
+	lda scraddr
+	clc
+	adc .celldirvals_lo,y
+	sta scraddr
+
+	lda .celldirvals_hi,y	; (y&1)?$ff:$00 bloatoisi yli 4:llä
+	adc scraddr+1
+	sta scraddr+1
+
+	cmp #$1d	; first legal page
+	bmi .back
+	cmp #$1f ;!!	; first illegal page after legal area
+	bpl .back
+
+	jmp entercell
+
+.back	tya
+	eor #1
+	tay
+	bpl .l0
+
+.celldirvals_lo
+	!byte $01,$ff,<SCRWIDTH,<-SCRWIDTH ; ,$00
+.celldirvals_hi
+	!byte $00,$ff,$00,$ff ; ,$00
+.cellrpdirs
+	!byte $00,$00 ; 1,ff
+.cellxcdirs
+	!byte $01,$ff,$00,$00
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;;;;;;;;; kbd idle loop and keypress handler
+
+!zone waitkey
+
+waitkey:
+
+.read	ldx #KEYDELAY
+	lda 197
+	cmp lastkey
+	bne .newkey
+
+	jsr blinkcursor
+	jsr frame
+	jsr frame
+
+	lda lastkey
+	cmp #64
+	beq .read
+
+	dec keyrate
+	bne .read
+
+	ldx #REPDELAY
+	bne .rts0
+
+.newkey	sta lastkey
+	cmp #64
+	beq .read
+	ldx #KEYDELAY
+.rts0	stx keyrate
+
+.rts	ldy #<msg_none
+	sty msgsrc
+	;rts - jmp hidecursor
+
+;;; ;;; ;;;
+
+!zone blinkcursor
+
+hidecursor:
+
+	lda #1
+	bit blinkstate
+	bne blinkcursor
+
+	rts
+
+blinkcursor:	; [charaddr+pixptr_y] ^= pixmask[pixptr_x][3]; blinkstate++
+
+	lda #$02
+	jsr getpixmask
+
+	eor (charaddr),y
+	sta (charaddr),y
+
+	inc blinkstate	; &1: 1=on, 0=off
+
+	rts
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+K_CHR	= $00
+K_PIX	= $10
+K_CDIR	= $20
+K_PDIR	= $30
+K_CHAR0 = $40
+K_SPCL  = $50
+K_HIDE  = $60
+K_FILE  = $70
+K_OPT   = $80
+K_NOP   = $F0
+K_QUIT  = $E0
+
+mainloop:
+	jsr getkey
+	jmp mainloop
+
+!zone getkey
+getkey:
+.l0	jsr waitkey
+
+	ldx 197
+	lda keytab,x
+	pha
+	and #$f0
+	tay
+	pla
+	and #$0f
+
+.c0	cpy #K_PDIR
+	bne .c1
+
+	    ;rts ;!
+	    tay
+	    jmp movebypixel
+
+.c1	cpy #K_CDIR
+	bne .c2
+
+	    sta tmp
+	    lda 653
+	    and #1
+	    ora tmp
+	    tay
+	    jmp movebycell
+
+.c2	cpy #K_CHR
+	bne .c3
+
+	    ldx 653
+	    bne .c2a
+
+	    clc
+	    adc toolchar0
+	    and #CHARSETMASK
+	    pha
+	    ldy #7		; PLAIN: chars
+	    lda #0
+.c2l0	    sta (charaddr),y
+	    dey
+	    bpl .c2l0
+	    jsr exitcell
+	    pla
+	    ldy #0
+	    sta (scraddr),y
+
+	    ldy #0
+	    jmp movebycell_noexit
+
+.c2a	    cpx #4		; CTRL: fg
+	    bne .c2b
+
+	    ldy #0
+	    sta (coladdr),y
+	    sta color
+	    rts
+
+.c2b        sta tmp
+	    lda rastptr
+            asl
+	    asl
+	    asl
+	    ora pixptr_y
+	    tay
+
+	    cpx #2		; CBM: border (no inversemodes yet)
+	    bne .c2c
+
+            lda raster0,y
+	    and #$f0
+	    ora tmp
+	    ora #$08
+	    sta raster0,y
+
+.c2hoo	    ldy #2
+            jmp movebypixel
+
+.c2c	    lda tmp
+	    asl
+	    asl
+	    asl
+	    asl
+	    sta tmp
+
+	    cpx #1		; SHIFT: bg
+	    beq .c2d
+
+	    ;lda tmp		; ELSE: aux
+	    sta raster1,y
+	    jmp .c2hoo
+
+.c2d	    lda raster0,y
+	    and #$0f
+	    ora tmp
+	    sta raster0,y
+	    jmp .c2hoo
+
+.c3	cpy #K_PIX
+	bne .c4
+
+	    jmp putpixel
+
+.c4	cpy #K_QUIT
+	bne .c5
+
+	    rts
+	    ;jmp RESET
+
+.c5	cpy #K_CHAR0
+	bne .c6
+
+	    asl
+	    asl
+	    asl
+	    asl
+	    adc toolchar0
+	    and #CHARSETMASK
+	    sta toolchar0
+	    rts
+
+.c6	cpy #K_SPCL
+	bne .c7
+
+	    ; instancemode
+
+	    jsr exitcell
+	    ldy #0
+	    lda (scraddr),y
+	    cmp #4		; chars 0..3 are uneditable
+	    bcc .rts
+	    sta charidx
+	    php
+	    jmp entercell_loads	; MIKSI BREIKKAA
+
+.c7	cpy #K_HIDE
+	bne .c8
+
+	    lda hidemode
+	    eor #1
+	    sta hidemode
+	    rts
+
+.c8	cpy #K_FILE
+	bne .c9
+
+	    lda 653		; shift=save
+	    and #1
+	    sta optype
+
+	    jsr exitcell
+ 	    jsr fileop
+	    jmp entercell
+
+.c9	cpy #K_OPT
+	bne .c10
+
+	    jmp remove_unused_chars
+
+.c10
+.rts	rts
+
+;;; table of keys (by kernal scancode)
+
+keytab
+	!byte 0|K_CHR	; 1
+	!byte 2|K_CHR	; 3
+	!byte 4|K_CHR	; 5
+	!byte 6|K_CHR	; 7
+	!byte 8|K_CHR	; 9
+	!byte K_QUIT	; +
+	!byte K_OPT	; pound
+	!byte K_QUIT	; inst/del
+
+	!byte K_QUIT	; <-
+	!byte 10|K_CHR	; W
+	!byte 12|K_CHR	; R
+	!byte 14|K_CHR	; Y
+	!byte 3|K_PDIR	; I
+	!byte K_QUIT	; P
+	!byte K_QUIT	; *
+	!byte K_QUIT	; return
+
+	!byte K_QUIT	; none
+	!byte K_QUIT	; A
+	!byte K_QUIT	; D
+	!byte K_QUIT	; G
+	!byte 1|K_PDIR	; J
+	!byte 0|K_PDIR	; L
+	!byte K_QUIT    ; ;
+	!byte 0|K_CDIR	; crsr lt/rt
+
+	!byte K_QUIT	; run/stop
+	!byte K_QUIT	; none
+	!byte 1|K_PIX	; X
+	!byte 3|K_PIX	; V
+	!byte K_QUIT	; N
+	!byte 15|K_CHAR0 ; ,
+	!byte K_SPCL	; /
+	!byte 2|K_CDIR	; crsr up/dn
+
+	!byte K_QUIT	; space
+	!byte 0|K_PIX	; Z
+	!byte 2|K_PIX	; C
+	!byte K_QUIT	; B
+	!byte 2|K_PDIR	; M
+	!byte 1|K_CHAR0	; .
+	!byte K_QUIT	; none
+	!byte K_QUIT	; f1
+
+	!byte K_QUIT	; none
+	!byte K_QUIT	; S
+	!byte K_QUIT	; F
+	!byte K_QUIT	; H
+	!byte K_QUIT	; K
+	!byte K_QUIT    ; :
+	!byte K_QUIT	; =
+	!byte K_QUIT	; f3
+
+	!byte 9|K_CHR	; Q
+	!byte 11|K_CHR	; E
+	!byte 13|K_CHR	; T
+	!byte 15|K_CHR	; U
+	!byte K_QUIT	; O
+	!byte K_FILE	; @
+	!byte K_HIDE	; ^
+	!byte K_QUIT	; f5
+
+	!byte 1|K_CHR	; 2
+	!byte 3|K_CHR	; 4
+	!byte 5|K_CHR	; 6
+	!byte 7|K_CHR	; 8
+	!byte 9|K_CHR	; 0
+	!byte K_QUIT	; -
+	!byte K_QUIT	; clr/home
+	!byte K_QUIT	; f7
+
+	!byte K_NOP	; none
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;;;;;;;;;;;;;;;;;; low-level pixel plotting
+
+!zone putpixel
+putpixel:	; [charaddr+pixptr_y] = 
+		; [charaddr+pixptr_y] & ~pixmask(3,pixptr_x) | 
+		;                        pixmask(a,pixptr_x)
+
+	pha			; a = color
+
+	lda #$03		; $80 for hires, $c0 for lores
+	jsr getpixmask
+
+	eor #$ff
+	and (charaddr),y
+	sta tmp
+
+	pla
+	jsr getpixmask
+	ora tmp
+	sta (charaddr),y
+
+	rts
+
+;;; ;;;
+
+!zone getpixmask
+getpixmask:	; a = (masks[mode][a] >> pixptr_x); y = pixptr_y
+
+;	tay
+	sta tmp2
+	lda color
+	and #8
+	lsr
+	ora tmp2
+
+	tay
+	lda hiresmasks,y
+	ldy pixptr_y
+	ldx pixptr_x
+	;continue to mlsr
+
+mlsr:
+	cpx #0
+	beq .rts
+.l0	lsr
+	dex
+	bne .l0
+
+.rts	rts
+
+hiresmasks
+	!byte $00,$00,$80,$80
+loresmasks
+	!byte $00,$40,$80,$c0
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;;;;;;;;;;;;;;; cell enter/exit, dynamic allocation etc
+
+!zone exitcell
+exitcell:
+
+	jsr find_duplicate	; x = index to char, c=0 if not found
+	bcc .rts
+
+	txa			; replace char with duplicate
+	ldy #0
+	sta (scraddr),y
+
+ 	ldy #7
+ 	lda #0
+.l0 	sta (charaddr),y
+	dey
+	bpl .l0
+
+.rts	rts
+
+;;; ;;;
+
+!zone entercell
+entercell:	; scraddr -> charidx, charaddr, color/mode
+		; alloc new char (copy of charidx), set charidx&charaddr
+
+	ldy #0		; char under cursor
+	lda (scraddr),y
+	sta charidx
+	php		; need z flag
+
+;;;;	allocation
+
+	cmp #4			; char 0..3: alloc needed even if only inst
+	bcc .c1b
+
+	jsr count_char_instances
+	cpx #0
+	bne .c1			; only instance (x>0): no alloc needed
+
+.c1b	jsr alloc_copy_char
+	;bcc .outmem		; if out of memory: no alloc
+	stx charidx
+	txa
+	ldy #0
+	sta (scraddr),y
+.outmem
+
+;;;;
+
+entercell_loads:
+
+.c1	lda scraddr
+	sta coladdr
+	lda scraddr+1
+	and #$03
+	ora #$94
+	sta coladdr+1
+
+	lda (coladdr),y
+	plp
+	bne .c2
+	    lda color		; selected color follows if empty area
+	    sta (coladdr),y
+.c2	and #15
+	sta color
+
+;	jmp getcharaddr
+
+;;;
+
+!zone getcharaddr
+getcharaddr:	; charaddr = $1400+charidx*8
+
+	lda charidx	; remove if not called from elsewhere
+	asl
+	asl
+	asl
+	sta charaddr
+
+	lda charidx
+	lsr
+	lsr
+	lsr
+	lsr
+	lsr
+	clc
+	adc #CHARPAGE
+	sta charaddr+1
+	rts
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;;;;;;;;;;;;;;; char allocation library
+
+!zone count_char_instances
+count_char_instances:
+;	a = charidx	ret in x: 2=none, 1=one, 0=more
+
+	ldx #2
+	ldy #0
+.l0	cmp $100+SCRPAGE*$100,y
+	bne .c0
+	    dex
+	    beq .rts
+
+.c0	cmp $200+SCRPAGE*$100,y
+	bne .c1
+	    dex
+	    beq .rts
+.c1	dey
+	bne .l0
+.rts	rts
+
+;;;
+
+!zone remove_unused_chars
+remove_unused_chars:
+
+	lda charidx
+	pha
+
+	lda #4
+	sta charidx
+
+.l0	jsr count_char_instances
+	cpx #2
+	bne .c1
+
+	jsr getcharaddr
+	ldy #7
+	lda #0
+.l1	sta (charaddr),y
+	dey
+	bpl .l1	
+
+.c1	inc charidx
+	bpl .l0		; bne if 256 chars
+
+	pla
+	sta charidx
+	jmp getcharaddr
+
+;;;
+
+!zone find_duplicate
+find_duplicate:
+;	compare all chars to the char in charidx (except the char itself)
+;	if duplicate found: c=1, x=index, charaddr1 points to char bitmap
+;	if not found (256 chars searched): c=0
+
+	lda #$00	; 08?
+	sta charaddr1
+	lda #CHARPAGE
+	sta charaddr1+1
+
+	jsr getcharaddr	; set charaddr according to charidx
+
+	ldx #0		; x = index of compared char
+.l1	cpx charidx
+	beq .nodup
+	ldy #7
+.l0	lda (charaddr),y
+	cmp (charaddr1),y
+	bne .nodup
+	dey
+	bpl .l0
+.yes	sec		
+	rts		; c = 1, x = index for duplicate
+
+.nodup	clc
+	lda charaddr1
+	adc #8
+	sta charaddr1
+	bne .c1
+	inc charaddr1+1
+.c1	inx
+	bne .l1
+.no	clc
+	rts		; c = 0
+
+;;;
+
+!zone alloc_char
+alloc_char:		; alloced char = first duplicate for char zero
+			; saves charidx
+
+	lda charidx
+	pha
+	lda #0
+	sta charidx
+	jsr find_duplicate
+	pla
+	sta charidx
+	rts		; c=0 if out of memory, else
+			; c=1, x=index, charaddr1 = pointer to bitmap
+			; charaddr = pointer to zerochar
+
+;;;
+
+!zone alloc_copy_char
+alloc_copy_char:	; alloc char, copy current charidx stuff to it.
+			; return x = index to destination char
+
+	jsr alloc_char
+	bcc .memout
+
+	; now x = index for destination char
+	jsr getcharaddr	; address for source char (charidx)
+
+	ldy #7
+.l0	lda (charaddr),y
+	sta (charaddr1),y
+	dey
+	bpl .l0
+
+.memout	rts		; out of memory!!! (no duplicates for char zero)
+			; assert in code: can't edit chars 0..3
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;;;;;;;;;;;;;;;;;;;;;; misc unused shit
+
+!zone scroll_picture
+
+!if (OPT_SCROLL) {
+
+.srclos
+	!byte <(SCRPAGE*$100+$100)
+		!byte <(SCRPAGE*$100+$100+(SCRHEIGHT-1)*SCRWIDTH-2)
+	!byte <(COLPAGE*$100+$100)
+		!byte <(COLPAGE*$100+$100+(SCRHEIGHT-1)*SCRWIDTH-2)
+	!byte <raster0
+		!byte <(raster0+SCRHEIGHT*8-2)
+	!byte <raster1
+		!byte <(raster1+SCRHEIGHT*8-2)
+.srchis
+	!byte >(SCRPAGE*$100+$100)
+		!byte >(SCRPAGE*$100+$100+(SCRHEIGHT-1)*SCRWIDTH-2)
+	!byte >(COLPAGE*$100+$100)
+		!byte >(COLPAGE*$100+$100+(SCRHEIGHT-1)*SCRWIDTH-2)
+	!byte >raster0
+		!byte >(raster0+SCRHEIGHT*8-2)
+	!byte >raster1
+		!byte >(raster1+SCRHEIGHT*8-2)
+
+.modulolos
+	!byte SCRWIDTH
+		!byte <(-SCRWIDTH)
+	!byte SCRWIDTH
+		!byte <(-SCRWIDTH)
+	!byte 8
+		!byte <(-8)
+	!byte 8
+		!byte <(-8)
+.modulohis
+	!byte 0
+		!byte $ff
+	!byte 0
+		!byte $ff
+	!byte 0
+		!byte $ff
+	!byte 0
+		!byte $ff
+
+.widths
+	!byte SCRWIDTH-1
+		!byte SCRWIDTH-1
+	!byte SCRWIDTH-1
+		!byte SCRWIDTH-1
+	!byte 7
+		!byte 7
+	!byte 7
+		!byte 7
+
+; ^^^ BLOAT!!!!1
+
+scroll_picture:
+
+	.src=charaddr1
+	.dest=copyptr
+
+	tax	; 7 tai 8
+
+.l2	lda #SCRHEIGHT
+	sta tmp
+
+	lda .srclos-1,x
+	sta .src
+	lda .srchis-1,x
+	sta .src+1
+
+.l1	lda .modulolos-1,x
+	adc .src
+	sta .dest
+	lda .modulohis-1,x	; modulolo:n merkki
+	adc .src+1
+	sta .dest+1
+	ldy .widths-1,x
+
+.l0	lda (.src),y	; swap src[0..width-1] with dest[0..width-1]
+	tax
+	lda (.dest),y
+	;sta (.src),y
+	txa
+	;sta (.dest),y
+	dey
+	bne .l0
+
+	lda .dest	; dest=src
+	sta .src
+	lda .dest+1
+	sta .src+1
+
+.c0	dec tmp		; loop SCRHEIGHT times
+	bne .l1
+
+	dex
+	dex
+	bpl .l2
+}
+	rts
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;;;;;; screen raster routine for (must be page-aligned for proper timing)
+
+!zone drawframe
+!align $ff,0
+
+ras0:
+drawframe_hide:
+
+!if (OPT_HIDE) {
+	lda #155
+.l0xx	cmp $9004
+	bne .l0xx
+
+	lda #28*2
+	sta $9003
+
+	lda #0
+	sta $9001
+	sta $900f
+	sta $9000
+	lda #32
+	sta $9002
+
+	lda #24+1
+	bne .ll0
+}
+
+drawframe:
+
+	lda #(20+1+8+2)*2 ; 24*2
+	sta $9003
+
+.d00	lda #0
+	sta rasthome
+
+.l0x	lda $9004
+	cmp #22
+	bne .l0x
+
+	lda #$f2
+	sta $9005
+	lda #25
+	sta $9002
+	lda #8
+	sta $900f
+
+	;;; ..
+
+!if (OPT_HIDE) {
+	lda #5
+	sta .firstaddr
+	lda #$fe
+	sta .firstval
+}
+
+;;;;;;;;;;;;;;;;;;;;;;; rastablast
+
+        lda #23+8-7	; syncpoint
+.ll0    cmp $9004       ; wait until at given rasterline
+        bne .ll0        ; bail out 3..9 clocks after $9004 change
+                                ; first cmp must occurr 71-3-4=64 clks later
+
+        lda $9003       ; -4 (60)
+        ldy #12         ; -2 (58)  -1 no matter
+
+.m1     ldx #18        ; wait 57
+.m2     dex
+        dex
+        bne .m2
+
+        cmp $9003       ; +4
+        beq *+2         ; +3 if equal, +2 if not equal
+        eor #$80        ; +2
+        dey             ; +2
+        bne .m1         ; +3 -> total 71 if adjusted, 70 if not
+
+!if (OPT_HIDE) {
+
+	lda #23
+	sta $9001
+
+	lda hidemode
+	beq .nohide
+
+	jsr wait28
+	jsr wait28
+
+	lda #8
+	sta $9000
+
+	lda #161
+	bne .pic
+}
+
+;;;;;;;;;;;;;;;;;;;;;;; charset area: zoomed rasters (8*8)
+
+.nohide	
+	lda #8
+	sta tmp2
+	sta .cellheight
+
+!if (!OPT_HIDE) {
+	lda #5
+	sta .firstaddr
+	lda #$fe
+	sta .firstval
+}
+
+	lda rastptr
+	asl
+	asl
+	asl
+	tay		
+	jsr .rasterblock
+
+;;;;;;;;;;;;;;;;;;;;;;; separator area: 8 empty lines, length 6
+
+;	HERE 31 past syncpoint
+;	WAIT 71-31-12 == 28 clocks
+	jsr wait28
+
+	lda #6		; 2
+	ldx #$08	; 2
+	sta $9002	; 4
+	stx $900f	; 4
+
+;	WAIT 71*8-56 == 512 clocks
+	jsr wait512
+
+;;;;;;;;;;;;;;;;;;;;;;; picture area: normal rasters (n*1)
+
+;	56 to next syncpoint
+
+	lda #161 ; 28	; 2
+.pic	sta tmp2	; 3
+	lda #1		; 2
+	sta .cellheight	; 4
+	lda #2		; 2
+	sta .firstaddr	; 4
+	lda #25		; 2
+	sta .firstval	; 4
+
+	lda rasthome	; 3
+	tay		; 2
+	jsr .rasterblock ;6	- 22 to next syncpoint
+
+;;;;;;;;;;;;;;;;;;;;;;;; overscan: prepare for text on the top
+
+	lda #0
+	sta $9002
+	lda #8
+	sta $900f
+	rts
+
+;;;;;;;;;;;;;;;;;;;;;;;; rasterblock routine
+
+.l1	; WAIT 71-47 (24 clocks)
+	jsr wait24
+
+.rasterblock:
+.l1s	lda #8		; 2		inittinä joko 1 tai 8
+	.cellheight=*-1
+	sta tmp		; 3
+
+	jmp .l0s	; 3
+
+.l0	; WAIT 71-30 (41 clocks)
+	jsr wait41
+
+.l0s
+	ldx raster1,y	; 4
+
+	lda #$88	; 2
+	.firstval=*-1
+	sta $9088	; 4
+	.firstaddr=*-2
+
+	lda raster0,y	; 4
+
+			; ---syncpoint
+
+	sta $900f	; 4
+	stx $900e	; 4
+
+	dec tmp		; 5
+	bne .l0		; 3
+
+			; -1
+	iny		; 2
+
+	dec tmp2	; 5
+	bne .l1		; 3
+
+			; -1
+	rts		; 6
+
+;;;;;;;;;;;;;;;;;;;;;;;;; waiters
+
+wait512:  ; 471
+	ldx #94		; 2
+.w0	dex		; 2
+	bne .w0		; 3	; 94x5-1+2 == 471
+
+wait41:	; +13
+	cmp (0,x)
+	pha
+	pla
+wait28:	; +4
+	nop
+	nop
+wait24:	; 12
+	jsr .rts
+.rts	rts
+ras1:
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+prompttext:
+	!scrxor $80,"DEAVOALS"  ; "LOAD" & "SAVE"
+
+!zone prompt
+fileop:
+	jsr CLALL
+
+prompt:
+	;;; prepare screen
+
+	lda #3*2	; screen size 3 rows
+	sta $9003
+
+	lda #25
+	sta $9002
+
+	lda #$f2
+	sta $9005
+
+	lda #$0a
+	sta $900f
+
+	ldy optype
+
+	ldx #24
+.l0	lda #1
+	sta $9400+50,x
+	lda #$20
+	cpx #4
+	bcs .c1
+	lda prompttext,y
+	iny
+	iny
+.c1	sta $1c00+50,x
+	dex 
+	bpl .l0
+
+	;;; prompt for stuff
+
+	lda #0		; stringlength to zero
+	sta tmp
+
+	;;;
+
+	lda 197
+	sta tmp2
+
+.l0zz	lda #0		; zero kbd buffer lgt
+	sta 198
+
+.l0z	sei
+	jsr SCNKEY	; wait for change in keyscan
+
+	ldx tmp
+	lda #160
+	sta $1c05+50,x
+	lda #32
+	sta $1c06+50,x
+
+	lda 197
+	cmp lastkey
+	beq .l0z
+	sta lastkey
+
+	asl		; if was 64: skip to cursor drawings
+	bmi .c3z
+
+	lda 631		; return -> name ok
+	cmp #13
+	beq .ok
+
+	cmp #20
+	bne .c1z	
+
+	dex		; del: shorten string, cancel if <0
+	bmi .cncl
+	bpl .c2z
+
+.c1z	sta $1c05+50,x	; draw text & cursor
+	cpx #15
+	beq .c3z
+	inx
+.c2z	stx tmp
+.c3z	jmp .l0zz
+
+	;;; open file
+
+.ok	ldx #8
+	ldy optype	; 0=read, 1=write
+	lda #1
+	jsr SETLFS
+
+	lda tmp		; name length
+	ldx #$05+50
+	ldy #$1c
+	jsr SETNAM
+
+	jsr OPEN
+	bcs .err
+
+	lda optype
+	beq .load
+
+	;;; save
+
+.save	ldx #1
+	jsr CHKOUT
+	bcs .err
+
+	lda #4
+	sta tmp3
+
+.l0b	ldx tmp3	; block header
+
+	lda .startlos,x
+	tay
+	jsr CHROUT
+
+	lda .starthis,x
+	sta tmpaddr+1
+	jsr CHROUT
+
+	lda .endlos,x
+	sta tmp
+	jsr CHROUT
+
+	lda .endhis,x
+	tax
+	jsr CHROUT
+
+	jsr filemem	; block
+
+	dec tmp3
+	bpl .l0b
+
+.close	lda #1		; close file, "done"
+	jsr CLOSE
+	bcs .err
+
+	lda #<msg_done
+	bne .xit
+
+error
+.err	lda #<msg_error
+.xit	sta msgsrc
+
+.cncl	sei
+	rts
+
+.load	ldx #1
+	jsr CHKIN
+	bcs .err
+
+.ldlp	jsr CHRIN
+	tay
+	lda $90
+	bne .close
+	jsr CHRIN
+	sta tmpaddr+1
+	jsr CHRIN
+	sta tmp
+	jsr CHRIN
+	tax
+
+	jsr filemem
+
+	jmp .ldlp
+
+
+.startlos !byte <raster1,               >raster0,               $20, $00, $00
+.starthis !byte >raster1,               >raster0,               $18, $1d, $95
+.endlos   !byte <(raster1+SCRHEIGHT*8), <(raster0+SCRHEIGHT*8), $00, $00, $00
+.endhis   !byte >(raster1+SCRHEIGHT*8), >(raster0+SCRHEIGHT*8), $1c, $1f, $97
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+!zone filemem
+
+filemem:
+	;;; read/write memory areas
+
+	; tmpaddr+1.y    = address
+	;         x.tmp  = endaddress (last+1)
+	; optype = 0 if reading, 1 if writing
+
+	lda #0
+	sta tmpaddr
+
+.l0	lda optype
+	beq .c2
+
+	    lda (tmpaddr),y
+	    jsr CHROUT
+	    jmp .c3
+
+.c2	    jsr CHRIN
+	    sta (tmpaddr),y
+
+.c3	bcs .rterr
+	inc $900f
+	iny
+	bne .c1
+	    inc tmpaddr+1
+.c1	cpy tmp  ; endaddress
+	bne .l0
+	cpx tmpaddr+1
+	bne .l0
+	rts
+.rterr	pla
+	pla
+	jmp error
+
+;;;;;;; LOAD
+
+	; before this: open file
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;;;;;;;;;;;;;;;;;;;;;; initial content of character ram
+
+!zone inits
+!align $ffff,$1800
+basechars
+	!byte $00,$00,$00,$00, $00,$00,$00,$00
+	!byte $55,$55,$55,$55, $55,$55,$55,$55
+	!byte $aa,$aa,$aa,$aa, $aa,$aa,$aa,$aa
+	!byte $ff,$ff,$ff,$ff, $ff,$ff,$ff,$ff
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;;;;;;;;;;;;;;;;;;;;;; initialization
+
+!align $ffff,$1c00,0
+
+mcstart:
+	jsr CLALL
+
+	lda #8
+	sta $9000
+
+;	lda #$30
+;	sta $900e
+
+	lda #23
+	sta $9001
+
+	sei
+
+	ldx #0
+
+.l0:	lda #1
+	sta $9600,x
+	sta $9700,x
+
+	lda #0
+	sta $1e00-12,x
+	sta $1d00-12,x
+;	sta $1c00,x
+	sta $1b00,x
+	sta $1a00,x
+	sta $1900,x
+;	sta $1800,x
+
+	dex
+	bne .l0
+
+	ldx #0
+.l00	lda #$68
+	sta raster0,x
+	lda #$e0
+	sta raster1,x
+	dex
+	bne .l00
+
+;	ldx #4*8-1
+;.l1	lda basechars,x
+;	sta $1800,x
+;	dex
+;	bpl .l1	
+
+	;;
+
+	ldx #49
+.l2	lda toptext,x
+	sta $1c00,x	; WARNING: overriding init routine itself
+	dex
+	bpl .l2
+
+	;;
+
+	lda #0
+	sta blinkstate
+	sta pixptr_y
+	sta pixptr_x
+	sta rastptr
+	sta toolchar0
+	sta hidemode
+	sta msgptr
+	lda #0
+	sta scraddr
+	sta xcharptr
+	lda #$1d
+	sta scraddr+1
+	jsr entercell
+
+
+	jmp mainloop
+
+toptext:
+	!scr "            BrickShop 0.8"
+	!scr "01234567 123456789QWERTYU"

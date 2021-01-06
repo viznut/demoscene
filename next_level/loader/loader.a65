@@ -1,0 +1,140 @@
+!source "glob.inc"
+!sl "loader_glob.inc"
+;!to "loader.bin",plain
+
+; TODO force positioning so that it ends at $3ff
+; export loader symbols, !include "loader.exp" on democode side
+; rukkaile positiota vasta kun ollaan optimoitu sopivaksi
+
+*=loader_base
+
+!zone loader
+
+iecport1 = $912c	;$dd00	;$912c
+dato = 32		;32	;32
+clko = 2		;16	;2
+iecport2 = $911f	;$dd00	;$911f
+atno = 128		;8	;128
+clki = 1		;64	;1
+dati = 2		;128	;2
+clkf=$fd
+clkd=$dd
+
+loader_loop	; TODO only needed before init!
+		; TODO relocate to screenmem or other similar area
+.llp	jsr loader_irq
+	stx $900f
+	jmp .llp
+
+loader_irq:
+
+	; ainoat erot asm03-versioon on pitempi tauko ennen kuin ruvetaan
+	; odottamaan uutta startbittiä, ja se, että rutiinia kutsutaan vain
+	; n. 20 kertaa per frame. irq:ta paiskoo latauksen aikana
+	; (myös kesken tämän rutiinin) ihan samalla tavalla.
+
+	;;; loader_getbits -- IDENTICAL to asm03 version ;;;
+
+	lda $911f	; luettaessa on oltava DAT=hi
+	lsr		; startbit=0. jos 1 niin mennään ohi
+	bcs .rts	; -> bmi...
+
+	ldy #clkd	; akn startbit
+	sty $912c
+	jsr .safewait19
+
+	ldx #3		; prepare for loop
+
+	lda $911f	; load d0
+	lsr
+	ldy #clkf
+
+	sty $912c	; akn d0
+	ror .store	; save d0
+	ldy #clkd
+	jsr .safewait19
+	lda $911f	; load d1
+
+	sty $912c	; 4  akn  d1
+.l0	lsr		; 2
+	ror .store	; 6  save d1 d3 d5
+	ldy #clkf	; 2
+	jsr .safewait19	; insert 35-18 == 19 cycles of safewait
+	lda $911f	; 4  load d2 d4 d6
+
+	sty $912c	; 4  akn  d2 d4 d6 
+	lsr		; 2
+	ror .store	; 6  save d2 d4 d6
+	ldy #clkd	; 2
+	jsr .safewait19	; insert 35-18 == 19 cycles of safewait
+	lda $911f	; 4  load d3 d5 d7
+
+	sty $912c	; 4  akn  d3 d5 d7
+	dex		; 2
+	bne .l0		; 3
+
+	;;; stopbit
+
+	jsr .safewait19 ; between d7akn and stopbitakn
+	ldy #clkf	; akn stopbit
+	;jsr .safewait19 ;TESTINK
+	sty $912c
+
+	lsr
+	lda #0
+	.store=*-1
+	ror		;    save d7
+
+	;;; loader_eatbyte ;;;
+
+	ldy #3			; if 3..1: headermode
+	.hdrctr=*-1
+	beq .datamode
+	ldx .hdrptrs-1,y
+	sta .codebase,x
+	dec .hdrctr
+	bne .rts
+	    lda .datactr
+	    beq .jmpcmd
+.rts	rts
+.datamode
+.codebase
+	ldy #$88
+	loader_datactr=*-1
+	.datactr=*-1
+	sta $8888,y
+	.database=*-2
+	dec .datactr
+	beq .nexthdr
+	rts
+.nexthdr
+	ldy #3
+	sty .hdrctr
+	rts
+.jmpcmd
+;	pla	; don't kill jsr: we may return from called routine
+;	pla
+	ldy #3	; prepare for new block
+	sty .hdrctr
+	jmp (.database)
+.hdrptrs:
+	!byte .database  -.codebase +1
+	!byte .database  -.codebase
+	!byte .datactr   -.codebase
+
+.safewait:	; 20-12 == 8, here 9
+.safewait16:
+.safewait19:
+	pha
+	pla
+	rts
+
+loader_end:
+
+;;;;;; format:
+
+;	JMP:	00 addrlo addrhi
+;		jump to addr
+
+;	COPY:	length addrlo addrhi byte [byte]*
+;		copy bytes from addr+1 on (reversed order)

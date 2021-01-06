@@ -1,0 +1,381 @@
+!source "glob.inc"
+!sl "loader_glob.inc"
+;!to "loader.bin",plain
+
+*=loader_base
+
+!zone loader
+
+RLE_ESCAPE=182
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;	
+
+;;; ;;; CONSTANTS ;;; ;;;
+
+iecport1 = $912c	;$dd00	;$912c
+dato = 32		;32	;32
+clko = 2		;16	;2
+iecport2 = $911f	;$dd00	;$911f
+atno = 128		;8	;128
+clki = 1		;64	;1
+dati = 2		;128	;2
+
+
+;	vimmii-loaderissa storetetaan aluksi selfmodifikaatiolla
+;	arvot CLK=x DATA=y :lle.
+;	ei kuitenkaan vaihdella näitä arvoja kesken kaiken.
+
+;	"normaali" iecport1:n arvo näyttäisi olevan $912c ($de).
+;	TESTI: vaihdetaan $dd:n ja $fd:n tilalle $de ja $fe.
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;; ;;; START LOOP ;;; ;;;
+
+	; loader_setbpf
+
+loader_loop
+	jsr loader_on
+.llp	jsr loader_irq
+	jmp .llp
+loader_off
+	lda #0
+	beq loader_on_speed
+loader_on
+	lda #$20
+	loader_on_bpf=*-1
+loader_on_speed
+	sta loader_bpf
+	rts
+loader_irq:
+	lda #$20
+	loader_bpf=*-1
+	sta .bytectr
+	beq .rts
+
+.l0	jsr loader_getbits
+
+	bcs .rts
+
+	;sec=$38.  $39?andnnnn,y $37?undoc $1c?undoc
+
+	ldx #0			; 0 = wait4data, 1 = wait4count
+	.rlemode=*-1
+	beq .data
+
+	dec .rlemode	
+
+	cmp #RLE_ESCAPE		; if count = RLE_ESCAPE -> it is data
+	beq .proczzzdisa
+.proczzzdisa
+	sta .bytectr
+.rlel0	lda #0
+	.lastbyte=*-1
+	jsr loader_eatbyte
+	dec .bytectr
+	bne .rlel0
+	rts
+
+.data	cmp #RLE_ESCAPE		; if data=RLE_ESCAPE: ignore byte, set mode
+	bne .proc
+.proczzzdisa2
+	inc .rlemode
+	bne .nxbyt
+
+.proc	sta .lastbyte		; note last databyte
+	jsr loader_eatbyte
+
+	;;;
+
+.nxbyt	dec .bytectr
+	bne .l0
+.rts	rts
+
+	; loaderin toistotarkistus rasteripohjaiseksi?
+
+.bytectr=loader_base-1
+
+	; jmp 
+	; all condbranches: 10 30 50 70 90 b0 d0 f0
+	; uncondbranches:   4c
+
+	; bcc = 90
+	; 8f? 91? 48?	91 = sta ($xx),y  48 = pha
+	; 
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;; ;;; RECEIVE A BYTE FROM THE DRIVE ;;; ;;;
+
+;.FATAL
+;	inc $900f
+;	jmp .FATAL
+
+;;;;;;;;;;;;;;;;;;;;;;; HALFSYNCHRONIC RECEIVE ;;;;;;;;;;;;;;;;;;;;;;
+
+!zone loader_getbits
+
+.safewait:	; 20-12 == 8, here 9
+.safewait16:
+.safewait19:
+	pha
+	pla
+	rts
+
+; systeemin mukaan loaderi on päälle (loader_bpf==2), mutta levarilta ei
+; kuitenkaan tule kamista.
+
+; - safewait19 liian lyhyt? -> levari epäsynkkiin.
+; - levari antaa sotkevaa kamista linjalle rom-käytön aikana?
+; nämä tuntuvat epätodennäköisiltä, koska vika ilmenee aina tietyssä
+; kohdassa. katsotaan nyt kuitenkin missä tilassa levari on.
+;	PEEK(37151)=124, alin bitti 1 eli startbittiä tarjolla.
+;	aknataan se:
+;	POKE 37164,221		125	1	0
+;	POKE 37164,253		125	1	1
+;	POKE 37164,221		125	1	2
+;	POKE 37164,253		125	1	3
+;	POKE 37164,221		125	1	4
+;	POKE 37164,253		125	1	5
+;	POKE 37164,221		125	1	6
+;	POKE 37164,253		125	1	7
+;	POKE 37164,221		125	1	stop
+;
+;	basic-loopin mukaan sieltä tulee nyt pelkkää ykköstä.
+;	vastaava looppi tehtynä kesken "ehjän osan" antaa ihan normaalia
+;	tavaraa.
+
+;	TOIVON HARTAASTI että kyseessä olisi sittenkin vain jokin
+;	kompuutteripään bugi.
+
+;	TESTI: loaderi päälle 
+
+;	onko "jumiutumiskohdassa" pelkkää ykköstä?
+
+
+;	1541	VIC
+;
+;	0
+;		$fd
+;	0
+;		$fd
+;	1		startbit
+;		$dd
+;	d0
+;		$fd
+;	d1
+;		$dd
+;	d2
+;		$fd
+;	d3
+;		$dd
+;	d4
+;		$fd
+;	d5
+;		$dd
+;	d6
+;		$fd
+;	d7
+;		$dd
+;	any
+;		$fd
+
+loader_getbits:
+
+
+;	RECALCULATE clocks per byte
+;	4+2+3 + 2+5+19 + 3+4+2+2 + 4+6+2+19+4+4		85
+;	3(4+2+6+2+19+4 + 4+2+6+2+19+4 + 4+2+3) -1	3x83 - 1 == 248
+;	+19+2+2+2+6					31
+;	TOTAL						364
+
+;	if no luck: B
+
+clkf=$fd
+clkd=$dd
+
+!if (DEVMODE=0) {
+
+;	$dd on sama kuin "128+8" (molemmat vapaina)
+;	$ff sama kuin "0"        (molemmat varattuina)
+
+	lda $911f	; luettaessa on oltava DAT=hi
+;!	and #3		; 0 tai 1 niin clk varattuna ja mennään ohi.
+;!	lsr		; jos 2 tai 3 niin alabitissä aarre, hypätään sinne
+;!	bne .read
+
+	lsr		; startbit=0. jos 1 niin mennään ohi
+;;;	bcc .read
+	bcs .rts
+
+;	lda #clkf	; just assert (vapauttaa clk:n yms)
+;	sta $912c
+
+;	sec		; noluck (c known to be 1)
+;	rts
+
+.read
+	ldy #clkd	; akn startbit
+	sty $912c
+	jsr .safewait19
+
+	ldx #3		; prepare for loop
+
+	lda $911f	; load d0
+	lsr
+	ldy #clkf
+
+	sty $912c	; akn d0
+	ror .store	; save d0
+	ldy #clkd
+	jsr .safewait19
+	lda $911f	; load d1
+
+;;; ;;;
+
+;!	ldy #clkf
+;!	sty $912c       ;    akn  d0
+;!	ldx #3		; 2
+;!	ror .store	; 6  save d0
+;!	ldy #$dd	; 2
+;!	jsr .safewait16	; insert 30-14 == 16 cycles of safewait
+;!	lda $911f	; 4  load d1
+ 
+	sty $912c	; 4  akn  d1
+.l0	lsr		; 2
+	ror .store	; 6  save d1 d3 d5
+	ldy #clkf	; 2
+	jsr .safewait19	; insert 35-18 == 19 cycles of safewait
+	lda $911f	; 4  load d2 d4 d6
+
+	sty $912c	; 4  akn  d2 d4 d6 
+	lsr		; 2
+	ror .store	; 6  save d2 d4 d6
+	ldy #clkd	; 2
+	jsr .safewait19	; insert 35-18 == 19 cycles of safewait
+	lda $911f	; 4  load d3 d5 d7
+
+	sty $912c	; 4  akn  d3 d5 d7
+	dex		; 2
+	bne .l0		; 3
+
+	;;; stopbit
+
+	jsr .safewait19 ; between d7akn and stopbitakn
+	ldy #clkf	; akn stopbit
+	sty $912c
+
+	lsr
+	lda #0
+	.store=*-1
+	ror		;    save d7
+	clc
+.rts	rts
+
+	;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;; ;;; PROCESS RECEIVED BYTE ;;; ;;;
+
+	;;; NO PROCESSING YET!!! JUST SHOW THEM
+
+} else {
+
+	; reading a byte takes 364 clocks (NOT 732!!!)
+
+	; testausvaiheessa:
+	; - etsi suurin tavumäärä jolla toimii ilman pätkimisiä
+	; - jaa kyseinen tavumäärä esim. 4:llä ja varmista että ehtii ladata
+	;   myös tällä nopeudella
+
+	;;;;inc $900f
+
+	ldx #16		; waits abt 384 clocks: 30*(19+5)
+.read	jsr .safewait19
+	dex
+	bne .read
+
+	;;;;dec $900f
+
+	lda $a400
+	;lda $4000	;KLUDKLUD
+	fakefileptr=*-2
+	inc fakefileptr
+	bne .zuz
+	inc fakefileptr+1
+.zuz	clc
+	rts
+}
+
+	;;; MAHTUUKO RLE-PURKAJA TÄHÄN VÄLIIN?
+
+	;;; ;;;
+
+	; 3: write to .datactr
+	; 2: write to .database
+	; 1: write to .database+1
+	; 0: write to [.database+.datactr]
+
+	; MEMWRITE:
+	;   numbytes, <(start-1), >(start-1), bytes in reverse order
+	; JUMP:
+	;   00, <addr, >addr
+
+
+!zone loader_eatbyte
+loader_eatbyte:
+	ldy #3			; if 3..1: headermode
+	.hdrctr=*-1
+	beq .datamode
+	ldx .hdrptrs-1,y
+	sta .codebase,x
+	dec .hdrctr
+	bne .plip
+	    lda .datactr
+	    beq .jmpcmd
+.plip	rts
+
+.datamode
+.codebase
+	ldy #$88
+	loader_datactr=*-1
+	.datactr=*-1
+	;beq .jmpcmd
+	sta $8888,y
+	.database=*-2
+	dec .datactr
+	beq .nexthdr
+	rts
+
+.nexthdr
+	ldy #3
+	sty .hdrctr
+
+	rts
+
+.jmpcmd
+	pla	; kill "jsr loader_getbits"
+	pla
+
+;	pla	; kill "jsr loader_irq"
+;	pla
+
+	ldy #3	; prepare for new block
+	sty .hdrctr
+	jmp (.database)
+
+.hdrptrs:
+	!byte .database  -.codebase +1
+	!byte .database  -.codebase
+	!byte .datactr   -.codebase
+
+loader_end:
+
+;;;;;; format:
+
+;	JMP:	00 addrlo addrhi
+;		jump to addr
+
+;	COPY:	length addrlo addrhi byte [byte]*
+;		copy bytes from addr+1 on (reversed order)

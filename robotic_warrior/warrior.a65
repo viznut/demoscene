@@ -1,0 +1,2405 @@
+;;;;;;;;;;;;;;;;;;;;; basic ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+	.word $1000
+	*=$1000
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+tmp=255
+tmp2=254
+
+scrydelta=191
+
+scrollpos_lo=192
+scrollpos_hi=193
+scrollpos_dlo=194
+scrollpos_dhi=195
+
+slinepos_lo=196
+slinepos_hi=197
+slinepos_dlo=198
+slinepos_dhi=199
+
+d_bitfetch=200
+d_bitcount=201
+d_bytecount=202
+d_phonecount=203
+d_loopcount=204
+d_framecnt=205
+d_lyricsub=206
+copyptr=208
+copyptr2=210
+dzptr=212
+rndseed=214
+timer=215
+colorscheme=216 ; 216 217 218 219  220 221 222 223
+
+postinit
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; main loop ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+alku	;inc $900f
+
+	jsr colregmess  ; xscroll
+	fxrtn=*-2
+
+	lda d_framecnt
+	beq ooho
+
+	    inc timer
+
+	    lda #0
+;	    sta $900f
+	    sta d_framecnt
+	    jsr musicint
+	    jsr designtick
+
+	    ldx #scrollpos_lo
+	    jsr posadd
+
+nores_scrollpos
+;	    lda #27
+;	    sta $900f
+
+ooho	lda $9111
+	cmp #126
+	beq alku
+	jmp 64802
+
+	; HAA!
+
+sing_on
+	    ldx #$f0
+	    stx digiswitch
+	    ldx #$b
+	    stx d_out0
+	    stx d_out0b
+	    ldx #$c
+	    stx d_out1
+	    stx d_out1b
+	    ldx #<digint
+	    stx $314
+	    ldx #>digint
+	    stx $315
+	    ldx #1
+	    stx $9125
+	    stx d_bytecount
+	    rts
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;; plasma ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;; fxfill - käytä 
+
+fxfill	ldx #127	; tekee myös riittävän randomia sellaisenaan.
+	txa
+
+fxl0	txa
+	eor rndseed
+	adc d_bitfetch		
+	noisesource=*-1
+	ror
+	sta rndseed
+	;eor $900d
+	and #7
+	tay
+	lda colorscheme,y
+	sta $9600,x
+	sta $9680,x
+	sta $9700,x
+	sta $9780,x
+	dex
+	bpl fxl0
+	rts
+
+purefill
+	ldx #0
+	lda timer
+	lsr
+	and #7
+	tay
+	lda colorscheme,y
+purefl0	sta $9600,x
+	sta $9700,x
+	dex
+	bne purefl0
+	rts
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;; design ticker ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+; combine with musicint
+
+designtick	.(
+		ldy #0			; cycles to next event
+		lda #255
+		clc
+		adc (dzptr),y
+		sta (dzptr),y
+		bne o0
+
+		iny
+		lda (dzptr),y
+		jsr dzopcode
+
+		tya
+		sec
+		adc dzptr
+		sta dzptr
+		bcc o0bob
+		   inc dzptr+1
+		o0bob
+		jmp designtick		; don't use dzptr on zeropage
+
+o0		rts
+		.)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;; design opcodes ;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+op_clrscr     = $00
+op_copy       = $01	; op_copy+(length-1) = copy n bytes
+			; [0] delay
+			; [1] op/length
+			; [2] addrlo (use address minus 4)
+			; [3] addrhi
+			; [4..] data
+
+op_showpic    = $ff	; picnum, coordinates
+op_showpic2   = $fe
+;op_setcolors  = $fd	; REPLACE! (effectselector or sumthng)
+op_sing       = $fd
+op_string     = $fc	; op_scopy-(length-1) = scopy n bytes
+			; [0] delay
+			; [1] op/length
+			; [2] addr (realaddr = this*2+$1e03
+			; [3..] data
+
+dzopcode	.(
+
+		tax			; x=a=opcode
+		bne o9
+
+		jmp dop_clrscr		; 0 = clrscr, operandless
+
+o9		iny			; opcodes n- have address operand(s)
+		lda (dzptr),y
+
+		cpx #0			; opcodes $8n- write to screenmem
+		bmi hiop		; (only 1 byte of opcode)
+
+		sta copyptr
+
+		iny
+		lda (dzptr),y
+		sta copyptr+1
+
+o9l		iny			; opcodes 1- = length addrlo addrhi data
+		lda (dzptr),y
+		sta (copyptr),y
+		dex
+		bne o9l
+
+		rts
+
+hiop		inx
+		bne hiop2a
+
+	;;; inlined dop_showpic ;;;
+
+	sta copyptr
+	iny
+	lda (dzptr),y
+	sta copyptr+1
+	iny
+	lda (dzptr),y
+	jsr unpack16x16_p0
+	ldy #4		; 0time 1opcode 2targetlo 3targethi 4picno
+	rts
+
+hiop2a		inx
+		bne hiop3
+
+	;;; showpic for const pos ;;;
+
+	ldx #<($1e00+25*6+4)
+	stx copyptr
+	ldx #>($1e00+25*6+4)
+	stx copyptr+1
+	jsr unpack16x16_p0
+	ldy #2
+	rts
+
+hiop3		inx			; fd -- sing_on
+		bne hiop5
+
+		dey			; no operands
+		jmp sing_on ; can inline here?
+
+		;; insert additional stuphies here
+
+hiop5		jmp dop_showstring	; fc
+		; a=first operand, x=opcode, y=ptr
+
+		.)
+
+dop_clrscr	.(
+
+		ldx #0
+		txa
+	l0	sta $1e00,x
+		sta $1f00,x
+		dex
+		bne l0
+		.)
+		rts
+
+;;;;;;;;;;;;;;;;;;;;;;;;; digital playback interrupt ;;;;;;;;;;;;;;;;;;;;;
+
+digint
+	lda $9124		; AKN INT
+
+	asl d_bitfetch
+
+	bcc jee
+
+	    lda #200	; 245 "ihan selkeä". 160 og
+	    sta $900f
+	    d_out0b=*-2
+	    sta $900f
+	    d_out1b=*-2
+	    dec d_bitcount
+	    beq v0rxx
+	    pla
+	    tay
+	    pla
+	    tax
+	    pla
+	    rti
+
+jee	lda #126
+	sta $900f
+	d_out0=*-2
+	sta $900f
+	d_out1=*-2
+
+ohi	dec d_bitcount
+	beq v0rxx
+
+        pla
+        tay
+        pla
+        tax
+        pla
+        rti
+
+;;;;;;;;;;;;;;;;;;;;;;;;;; digi ; fetch new byte ;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+digint_mute
+	lda $9124
+	jmp digint_mute2
+
+v0rxx	lda #8
+	sta d_bitcount
+
+	ldy d_bytecount
+	dey
+	beq v0rts3no
+
+	lda phonepage,y
+	d_base=*-2
+ 	sta d_bitfetch
+
+	sty d_bytecount
+
+digint_mute2
+	lda $9004
+	cmp #00
+	lastline=*-1
+	sta lastline
+	bcc dpoxxo
+v0rts0	pla
+	tay
+	pla
+	tax
+	pla
+	rti
+
+dpoxxo	inc d_framecnt
+	jmp v0rts0
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;; digi ; loop countdown ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+v0rts3no
+	dec d_loopcount
+	.byt $a9	; change to 'beq' ($f0) to activate speechsynth
+	digiswitch=*-1
+	.byt (v0ryy-(*+1))
+
+v0rzz	ldy #10  ; loopsize
+	d_loopsz=*-1
+
+v0rts2	
+	lda phonepage,y
+	d_base2=*-2
+ 	sta d_bitfetch
+
+	sty d_bytecount
+
+        pla
+        tay
+        pla
+        tax
+        pla
+        rti
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;; digi ; lyric fetch ;;;;;;;;;;;;;;;;;;;;;;;;
+
+v0ryy	lda lyrics	; load new phoneme info
+	lyricsptr=*-2
+	inc lyricsptr
+	bne v0ryyb
+            inc lyricsptr+1
+v0ryyb	pha		; high nybble = length (1..f, or 0 = wait)
+	and #$f0
+	lsr
+	lsr ;joo
+	sta d_loopcount
+	pla
+
+	and #$0f	; low nybble = phoneme id
+	cmp #$0f
+	bne v0ryyz
+
+	    ;;; DIGIHALT - command 0f ;;;
+
+	    jsr sing_off
+
+
+	    ; test under musicint? compare d_base to <phone_pause
+	    ; -> if eq then no songtiming
+
+v0ryyz	tay
+	lda ph_pointers,y
+	sta d_base
+	sta d_base2
+
+	tay
+	lda phonepage,y
+	sta d_loopsz
+	bne v0rzz	; always nonzero
+
+sing_off
+	    ldx #$a9
+	    stx digiswitch
+	    ldx #4
+	    stx d_out0
+	    stx d_out1
+	    stx d_out0b
+	    stx d_out1b
+	    stx $900b
+	    ldx #<digint_mute
+	    stx $314
+	    ldx #>digint_mute
+	    stx $315
+	    sei
+	    ldx #22
+	    stx $9125
+	    cli
+	    rts
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;; digi ; phoneme pointers ;;;;;;;;;;;;;;;;;;;;
+
+ph_pointers
+	.byt <qphone_o	; 0
+	.byt <qphone_i	; 1
+	.byt <qphone_n	; 2
+	.byt <qphone_e	; 3
+	.byt <qphone_h	; 4
+	.byt <qphone_s	; 5
+	.byt <qphone_u	; 6
+	.byt <qphone_l	; 7
+	.byt <qphone_m	; 8
+	.byt <phone_pause	; 9
+	.byt <qphone_a	; a
+	.byt <qphone_p	; b
+	.byt <qphone_k	; c
+	.byt <qphone_t	; d
+	.byt <phone_pause
+	.byt <phone_pause
+
+	; 0123456789abcdef
+	; oinehsulm.apkt
+
+	; aeioumnlktpsh
+
+	; ae10     7 54
+
+#print (*-postinit)
+
+
+digifreqs	; korkeudet bassohömpästä
+.byt 203,191,181,171,161,152,144,136,128,121,114,108,102,96,91
+.byt 255,255,255,255,255,255
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;; music interrupt ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+musicint
+
+pof2	lda chpitch+0
+	sta $900a
+
+	lda chpitch+1
+	sta $900c
+
+
+	lda chstatus+0
+	lsr
+	bcc pelle
+
+	ldx digiswitch
+	cpx #$a9
+	beq pelle
+
+	   and #15
+	   tax
+	   lda digifreqs,x
+	   ;sta $9124
+
+	 sei
+	 asl
+	 sta $9124
+	 lda #0
+	 adc #0
+	 sta $9125
+	 cli
+
+pelle
+
+
+pof6
+
+	lda chpitch+3
+	sta $900d
+	eor #64
+	bpl pof9
+	adc #3
+pof9	sta chpitch+3
+
+	lda #0
+	intctr=*-1
+	inc intctr
+	and #1
+	bne rtix
+
+;;;	do at 50Hz
+
+;;;	for 4 chans, read bytes
+
+	ldy #5
+runchs	tya
+	tax
+	dec chtempoctr-1,x
+	bne nextch
+
+	lda chtempo-1,y
+	sta chtempoctr-1,y
+
+	cpy #3
+	bne foobs
+
+	    lda $900e
+	    endswitch=*-3  ; change to dec ($ce)
+	    bne noend
+
+	        jmp 64802
+
+noend	    lda #1
+	    sta d_loopcount
+	    jmp nextch
+foobs
+
+	ldx chptr-1,y
+
+fetch	lda melostream,x
+	bpl donote
+
+	    dec melostream+1,x
+	    bne doloop
+	
+		lda melostream+2,x
+	        sta melostream+1,x
+	        lda #3
+
+doloop	    stx 255
+	    clc
+	    adc 255
+	    tax
+	    jmp fetch  ; bcs
+
+noloop	    inx
+	    bne fetch
+
+donote  cpy #4
+	bpl don3
+	    clc
+	    adc chstatus+4
+	    adc #255-23
+don3
+	sta chstatus-1,y
+	inx
+	txa
+	sta chptr-1,y
+
+nextch	cpy #5
+	beq nextch1
+
+	; chans 1(0)..3(2) = normal melody
+
+	lda chstatus-1,y	; &0=nosnd
+	lsr
+	bcc nosnd
+	    sta 255
+	    and #31
+	    cmp 255
+	    beq noblip
+		clc
+		adc #12
+noblip	    tax
+	    lda notes_pitch,x
+nosnd	sta chpitch-1,y
+
+	lda chstatus-1,y
+	and #255-64
+	sta chstatus-1,y
+
+nextch1	dey
+	bne runchs
+
+rtix	rts
+
+#print (*-postinit)
+
+.dsb (65536-*)&31,0
+
+pic_torture
+.byt %00000000,%00000000
+.byt %00000000,%00000000
+.byt %01110000,%00000000
+.byt %01111110,%00000000
+.byt %01110111,%10000000
+.byt %00000011,%11100000
+.byt %00000011,%11110000
+.byt %00010110,%11110000
+.byt %00011100,%01111000
+.byt %00010000,%00011000
+.byt %00010000,%00001100
+.byt %00010000,%00001100
+.byt %00010000,%00011100
+.byt %01111100,%00111100
+.byt %01010100,%00111100
+.byt %00000000,%00000000
+
+pic_robots
+.byt %00000000,%00000000
+.byt %00000001,%00000000
+.byt %00000001,%00000000
+.byt %00001001,%00111110
+.byt %00001001,%00011110
+.byt %00111101,%00111110
+.byt %00101101,%00011100
+.byt %00111101,%10001100
+.byt %00001100,%11111110
+.byt %00001100,%00111110
+.byt %00011110,%00011110
+.byt %00011110,%00011110
+.byt %00011110,%00001110
+.byt %00011110,%00001110
+.byt %00011110,%00001110
+.byt %00011110,%00001110
+
+pic_heart
+.byt %00000000,%00000000
+.byt %00001100,%00011000
+.byt %00011110,%00111100
+.byt %00111110,%00111110
+.byt %00111111,%01111110
+.byt %00111111,%01111110
+.byt %00111111,%01111110
+.byt %00011111,%11111100
+.byt %00011111,%11111100
+.byt %00001111,%11111000
+.byt %00001111,%11111000
+.byt %00000111,%11110000
+.byt %00000011,%11100000
+.byt %00000001,%11000000
+.byt %00000000,%10000000
+.byt %00000000,%00000000
+
+
+free_0
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; phonemes ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+#print (65536-*)&255
+.dsb (65536-*)&255,0
+phonepage
+#print (phonepage-free_0)
+
+phone_pause
+.byt 3,0,0,0
+
+qphone_a ; length 76 - expanded by factor 1.9
+.byt 5
+.byt %01100110
+.byt %00011110
+.byt %01100111
+.byt %00111000
+.byt %10100011
+
+qphone_e ; length 76 - expanded by factor 1.9
+.byt 5
+.byt %00011100
+.byt %00001111
+.byt %10000111
+.byt %11010011
+.byt %10101000
+
+qphone_i ; length 76 - expanded by factor 1.9
+.byt 5
+.byt %10101101
+.byt %00101000
+.byt %01011111
+.byt %01111101
+.byt %10000101
+
+qphone_o ; length 76 - expanded by factor 1.9
+.byt 5
+.byt %11111100
+.byt %11111000
+.byt %01111001
+.byt %01110000
+.byt %11110100
+
+qphone_u ; length 76 - expanded by factor 1.9
+.byt 5
+.byt %11111111
+.byt %11000000
+.byt %00000111
+.byt %11111100
+.byt %00000001
+
+qphone_m ; length 76 - expanded by factor 1.9
+.byt 5
+.byt %01111111
+.byt %10000011
+.byt %00010101
+.byt %00100110
+.byt %00000000
+
+qphone_n ; length 75 - expanded by factor 1.875
+.byt 5
+.byt %10100100
+.byt %11111111
+.byt %00011111
+.byt %00000000
+.byt %10101101
+
+qphone_l ; length 76 - expanded by factor 1.9
+.byt 5
+.byt %11110000
+.byt %11100000
+.byt %11000011
+.byt %10001111
+.byt %11111100
+
+qphone_k ; length 54 - expanded by factor 1.6875
+.byt 4
+.byt %11010011
+.byt %01101100
+.byt %11001001
+.byt %00100110
+
+qphone_t ; length 40 - expanded by factor 1.66666666666667
+.byt 3
+.byt %01100100
+.byt %00010011
+.byt %01010110
+
+qphone_s ; length 67 - expanded by factor 1.675
+.byt 5
+.byt %10101101
+.byt %10101011
+.byt %01011010
+.byt %01110101
+.byt %10100101
+
+qphone_p ; length 65 - expanded by factor 1.625
+.byt 5
+.byt %10011111
+.byt %11011111
+.byt %11111100
+.byt %11110000
+.byt %00000001
+
+qphone_h ; length 63 - expanded by factor 1.96875
+.byt 4
+.byt %00000110
+.byt %01010010
+.byt %11010110
+.byt %10101010
+
+lyrics	; must be within page
+
+; EONS AGO
+.byt $01,$ea,$02,$15,$0a,$19,$1c,$00,$06,$0f
+
+; THERE WAS A LAND
+.byt $1d,$53,$5a,$46,$00,$25,$30,$47,$03,$03,$03,$02,$29,$1d,$09,$0f
+
+; THE LAND WAS RULED
+.byt $1d,$40,$27,$03,$02,$19,$1d
+.byt $26,$00,$25,$2a,$06,$06,$07,$29,$1d,$09,$0f
+
+; BY AN EVIL EMPEROR
+.byt $09,$1b,$0a,$01,$43,$42,$01,$01,$26,$30,$07
+.byt $03,$48,$19,$1b,$03,$4a,$00,$00,$0a,$0f
+
+; PEOPLE WERE TORTURED
+.byt $1b,$01,$01,$19,$1b,$00,$07,$09
+.byt $36,$53,$50,$e9,$1d,$00,$0a,$09,$1d,$25,$06,$00,$29,$1d,$09,$0f
+; vaihdettu "wea" -> "weo"
+
+; BUT REVENGE WAS TO COME
+.byt $1b,$0a,$19,$1d,$09,$2a,$01,$26,$03,$02,$02,$19,$1d,$25,$09,$09
+.byt $26,$00,$25,$29,$1d,$06,$39,$1c,$0a,$08,$0f
+
+; PEOPLE HAD CONSTRUCTED
+.byt $1b,$01,$01,$19,$1b,$00,$07,$09,$09,$44,$03,$19,$1d,$09
+.byt $1c,$00,$02,$25,$49,$1d,$26,$0a,$69,$1c,$69,$1d,$01,$01,$29,$1d,$09,$0f
+
+; A ROBOTIC WARRIOR
+.byt $03,$01,$09,$09,$2a,$00,$06,$19,$1b,$0a,$19,$1d,$01,$19,$1c,$09,$09
+.byt $26,$00,$00,$2a,$01,$00,$00,$0a,$0f
+
+; AND SO BEGAN
+.byt $03,$02,$19,$1d,$09,$35,$00,$06,06,$29,$1b,$01,$29,$1c,$03,$03,$02,$09,$0f
+
+; a new happy age
+.byt $43,$41,$09,$42,$01,$06,$06,$09,$14,$03,$29,$1b,$01,$29,$03,$01,$29,$1d,$25,$09,$0f
+
+; all humans were killed
+.byt $00,$00,$07, $24,$31,$06,$38,$60,$42,$25
+.byt $26,$63,$60,$29
+.byt $1c,$14,$01,$01,$07,$49,$1d,$09,$0f
+
+; and replaced by robots
+.byt $03,$02,$19,$1d,$49
+.byt $2a,$01,$29,$1b,$07,$33,$21,$55,$19,$17,$09
+.byt $1b,$0a,$01,$2a,$00,$19,$1b,$00,$00,$00,$19,$1d,$25,$09,$0f
+
+; ALL HAIL WARRIOR
+.byt $00,$00,$07,$07,$24,$03,$01,$01,$07,$07
+.byt $26,$00,$2a,$01,$00,$00,$00,$0a,$0f
+.byt $00,$00,$07,$07,$24,$03,$01,$01,$07,$07
+.byt $26,$00,$2a,$01,$00,$00,$00,$0a,$0f
+.byt $00,$00,$07,$07,$24,$03,$01,$01,$07,$07
+.byt $26,$00,$2a,$01,$00,$00,$00,$0a,$0f
+.byt $00,$00,$07,$07,$24,$03,$01,$01,$07,$07
+.byt $26,$00,$2a,$01,$00,$00,$00 ; ,$0a,$0f
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+nB0m=-1
+
+nC0=1
+nCp0=3
+nD0=5
+nDp0=7
+nE0=9
+nF0=11
+nFp0=13
+nG0=15
+nGp0=17
+nA0=19
+nAp0=21
+nB0=23
+
+nC1=1+24
+nCp1=3+24
+nD1=5+24
+nDp1=7+24
+nE1=9+24
+nF1=11+24
+nFp1=13+24
+nG1=15+24
+nGp1=17+24
+nA1=19+24
+nAp1=21+24
+nB1=23+24
+
+nC2=1+48
+nCp2=3+48
+nD2=5+48
+nDp2=7+48
+
+nblip=64
+
+
+
+
+
+notes_pitch
+	;                                  DIGI128
+	;    0   1   2   3   4   5   6   7   8   9   10  11
+	.byt 129,136,142,149,155,160,165,170,175,180,184,188
+	.byt 192,195,198,202,205,207,210,213,215,217,219,221
+	.byt 223,225,226,228,230,231,232,234,235,236,237,238
+
+chptr      .byt tune_bass,tune_melody,silence,tune_drums,tune_chord
+chtempo    .byt 4*3, 3, 6, 3, 3*64
+chtempoctr .byt 1,1,1,1,1
+chstatus   .byt 0,0,0,0,0
+chpitch    .byt 0,0,0,0 
+
+; #print (melostream-notes_pitch) ; mitenniin "not defined"
+
+.dsb (65536-*)&31,0	; TILAA 1 KUVALLE
+
+pic_sceptre
+.byt %00000000,%00000000
+.byt %00000000,%10000000
+.byt %00000001,%11000000
+.byt %00000111,%11110000
+.byt %00000001,%11000000
+.byt %00011101,%11011100
+.byt %00011001,%11001100
+.byt %00011111,%11111100
+.byt %00000001,%11000000
+.byt %00001111,%01111100
+.byt %00000111,%11111110
+.byt %00001111,%11111110
+.byt %00001111,%11111110
+.byt %00000001,%11001110
+.byt %00000001,%11000000
+.byt %00000001,%11000000
+
+free_1
+
+.dsb (65536-*)&255,0
+
+melostream *=*
+#print (melostream-free_1)
+
+tune_drums=*-melostream
+
+	.byt 0,256-1,28,28
+	.byt nAp1+64,nC1+64,nAp1+64,nAp1+64
+	.byt 256-8,2,2
+
+	.byt nC1+64, 0, nC1+64, 0, nAp1+64, 0, nC1+64,0
+	.byt 256-8,3,3
+	.byt nC1+64, 0, nC1+64, nC1+64, nAp1+64, nC1+64, nAp1+64,nAp1+64
+	.byt 256-16-3,14,15
+
+	.byt 256-16-3 -3 -11,255,255
+
+tune_bass=*-melostream
+
+	.byt nC1+64
+	.byt nC1+64
+	.byt nC1+64
+	.byt nDp1+64
+
+	.byt nG1+64
+	.byt nG1+64
+	.byt nG1+64
+	.byt nD1+64
+
+	.byt nF1+64
+	.byt nF1+64
+	.byt nF1+64
+	.byt nF1+64
+
+	.byt nG1+64
+	.byt nDp1+64
+	.byt nD1+64
+	.byt nDp1+64
+	.byt 256-16,255,255
+
+tune_melody=*-melostream
+
+;	.byt 0,256-1,64,64
+
+	.byt nC1+64,  nG1+64, nC1+64, nC1+64
+	.byt 256-4,2,2
+	.byt 0,256-1,8+16,8+16
+	.byt nF1+64,  nF1+64, nF1+64, nF1+64
+	.byt nF1+64, nF1+64,nAp1+64,nC1+64
+	.byt 0,256-1,8+16,8+16
+	.byt 256-19-4,2,1
+
+	.byt nC1+64,  0,      nC1+64, nC1+64
+	.byt nC1+64,  0,      nC1+64, nC1+64
+	.byt 0,       nC1+64, nC1+64, nC1+64
+	.byt nDp1+64, 0,      nC1+64, nDp1+64
+
+	.byt nG1+64,  0,      nG1+64, nG1+64
+        .byt nG1+64,  0,      nG1+64, nG1+64
+        .byt 0,       nD1+64, nD1+64, nD1+64
+        .byt nD1+64,  nD1+64, nDp1+64,nDp1+64
+
+	.byt nF1+64,  0,      nF1+64, nF1+64
+        .byt nF1+64,  0,      nF1+64, nF1+64
+        .byt 0,       nF1+64, nF1+64, nF1+64
+        .byt nG1+64,  0,      nF1+64, nF1+64
+
+        .byt nG1+64,  nC1+64, 0,      nC1+64
+        .byt nDp1+64, 0,      nF1+64, nD1+64
+        .byt 0,       nD1+64, nD1+64, nD1+64
+        .byt nDp1+64, 0,      nAp0+64,nD1+64
+
+	.byt 256-64,6,6
+
+	.byt 256-64-3 -19-4-3,255,255
+
+tune_chord=*-melostream
+
+	.byt nC1-19, nC1-19
+	.byt nC1-19, nC1-19
+	.byt nDp1-19, nDp1-19
+	.byt nG1-19, nG1-19
+;	.byt nG1-19, nAp0-19
+	.byt nDp1-19, nDp1-19
+	.byt nDp1-19, nDp1-19
+	.byt nDp1-19, nDp1-19
+;	.byt 256-10,255,255	; REMOVE?
+
+silence=*-melostream
+
+	.byt 0,256-1,255,255,256-4,255,255
+
+#print (*-notes_pitch)
+
+;;;;;;;;;;;;;;;;;;;;;;; 16x16 graphics unpacker ;;;;;;;;;;;;;;;;;;;;;;;;
+
+	tmparea = $1d00
+
+unpack16x16_p0
+
+	; a = pictureid (any 32-aligned address between $0000..$1fe0)
+	;		 format lllhhhhh = ((pic&$1f00)>>8) | (pic&$e0)
+
+	; p0 == bit->byte unpack into tmparea
+
+	tax
+	and #$e0
+	sta unpacksrc
+	txa
+	and #$1f
+	sta unpacksrc+1
+
+	unpacksrc = *+2+1
+
+	.(
+
+	unpackbuf = tmparea
+
+	; set - srcbufptr, copyptr
+
+	;;; unpack to bytes (only most significant meaningful)
+	ldx #0
+l1	lda $1234
+	srcbufptr=*-2
+	ldy #8
+l0	sta unpackbuf,x
+	inx
+	asl
+	dey
+	bne l0
+
+	inc srcbufptr
+
+	txa
+	bne l1
+
+	.)
+
+	; rts
+
+unpack16x16_p1
+
+	; dump from unpackbuf to screen.
+	; first
+
+	.(
+
+	unpackbuf=tmparea
+
+	ldx #0
+
+l1b	ldy #15
+
+l0b	lda unpackbuf+16,x
+	bmi o0
+
+	lda unpackbuf-1+16,x
+	asl
+	rol tmp
+	lda unpackbuf+1+16,x
+	asl
+	rol tmp
+	lda unpackbuf-16+16,x
+	asl
+	rol tmp
+	lda unpackbuf+16+16,x
+	asl
+	lda tmp
+	rol
+	and #$0f		; zeros become 0000rlud
+
+	.byt $2c
+o0	lda #16 ; blankchar	; ones become  00010000
+	sta (copyptr),y
+
+	inx
+
+	dey
+	bpl l0b
+
+	clc
+	lda copyptr
+	adc #25
+	sta copyptr
+	bcc o1
+	    inc copyptr+1
+
+o1	cpx #$e0
+	bne l1b
+	rts
+
+	.)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;; letters unpacker ;;;;;;;;;;;;;;;;;;;;;;
+
+dop_showstring	.(		; a = first operand, x = opcode
+
+		;;; set output pointers ;;;
+
+		sta copyptr
+		;sta copyptr3
+
+		clc
+		adc #25
+		sta copyptr2
+		;sta copyptr4
+
+		iny
+		lda (dzptr),y
+		sta copyptr+1
+		;eor #$94^$1c
+		;sta copyptr3+1
+		adc #0
+		;sta copyptr4+1
+		;eor #$94^$1c
+		sta copyptr2+1
+
+		;;; lookup char shapes to stack ;;;
+
+		stx tmp
+
+l0		iny
+		lda (dzptr),y
+		tax
+		lda chars_dl,x
+		pha
+		lda chars_ul,x
+		pha
+		lda chars_dr,x
+		pha
+		lda chars_ur,x
+		pha
+		inc tmp
+		bne l0		; $ff = string length 1 char, etc
+
+		sty tmp		; y'ssä valmiiksi pituus+jotain
+
+		tya
+		sec
+		sbc #3
+		asl
+		tay
+
+l1		pla
+		sta (copyptr),y
+		pla
+		sta (copyptr2),y
+		;lda #7
+		;sta (copyptr3),y
+		;; other color for low half?
+		;sta (copyptr4),y
+		dey
+		bne l1
+
+		ldy tmp
+
+		rts ; jmp stroboifexpl
+
+		.)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;; letter shapes ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+cp=17
+
+chars_ul
+	.byt cp+17,cp+1,cp+0,cp+2,cp+14,cp+1,cp+1,cp+2,cp+9
+	.byt cp+13,cp+17,cp+8,cp+16,cp+0,cp+2,cp+2,cp+2,cp+2
+	.byt cp+2,cp+1,cp+0,cp+16,cp+9,cp+16,cp+9,cp+9,cp+3
+	.byt cp+7,cp+2,cp+3
+chars_ur
+	.byt cp+17,cp+4,cp+17,cp+7,cp+11,cp+7,cp+7,cp+6,cp+11
+	.byt cp+17,cp+12,cp+6,cp+17,cp+5,cp+5,cp+5,cp+5,cp+5
+	.byt cp+7,cp+6,cp+5,cp+12,cp+12,cp+12,cp+16,cp+11,cp+5
+	.byt cp+7,cp+7,cp+5
+chars_dl
+	.byt cp+17,cp+16,cp+1,cp+9,cp+9,cp+9,cp+16,cp+9,cp+16
+	.byt cp+13,cp+14,cp+16,cp+9,cp+16,cp+16,cp+9,cp+2,cp+3
+	.byt cp+16,cp+14,cp+13,cp+9,cp+13,cp+8,cp+12,cp+14,cp+1
+	.byt cp+17,cp+1,cp+17
+chars_dr
+	.byt cp+17,cp+12,cp+4,cp+15,cp+11,cp+15,cp+17,cp+11,cp+12
+	.byt cp+17,cp+11,cp+5,cp+15,cp+12,cp+12,cp+11,cp+7,cp+5
+	.byt cp+17,cp+11,cp+17,cp+11,cp+11,cp+11,cp+5,cp+11,cp+6
+	.byt cp+17,cp+4,cp+12
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+.dsb (65536-*)&31,0
+
+pic_rwprofile0
+.byt %00000000,%00000000
+.byt %00111111,%11111110
+.byt %00111111,%11111110
+.byt %01100001,%11111110
+.byt %00001001,%11111110
+.byt %00000011,%11111110
+.byt %01111111,%10010000
+.byt %01111111,%11111100
+.byt %00000111,%11111100
+.byt %00000011,%11111100
+.byt %01111111,%11111110
+.byt %01111111,%11111110
+.byt %01111111,%11111110
+.byt %00000011,%11100000
+.byt %00000011,%11100000
+.byt %00000011,%11100000
+
+pic_rwwhole2
+.byt %00000000,%00000000
+.byt %01010000,%00001010
+.byt %01110011,%11001110
+.byt %01110011,%11001110
+.byt %01110010,%01001110
+.byt %01110011,%11001110
+.byt %01110001,%10001110
+.byt %01111111,%11111110
+.byt %00111111,%11111100
+.byt %00011111,%11111000
+.byt %00011111,%11111000
+.byt %00011110,%01111000
+.byt %00011100,%00111000
+.byt %00011100,%00111000
+.byt %00111100,%00111100
+.byt %11111100,%00111111
+
+pic_lightning
+.byt %00000000,%00000000
+.byt %00000000,%00011000
+.byt %00000000,%00001100
+.byt %00000000,%00111110
+.byt %00000011,%11111110
+.byt %00111111,%10001100
+.byt %01111100,%00011000
+.byt %00011111,%00000000
+.byt %00000011,%11110000
+.byt %00000000,%00111110
+.byt %00000000,%00000111
+.byt %00000000,%01111110
+.byt %00011111,%11111000
+.byt %00001111,%11000000
+.byt %00011100,%00000000
+.byt %00000000,%00000000
+
+pic_emperor
+.byt %00000001,%01000000
+.byt %00100011,%01100000
+.byt %00100011,%11100010
+.byt %01110011,%11100010
+.byt %00100010,%10100110
+.byt %01110011,%11100110
+.byt %00100001,%11000110
+.byt %00100111,%11100110
+.byt %01111111,%11111110
+.byt %01111111,%01111100
+.byt %00101111,%11111100
+.byt %00101111,%01111000
+.byt %00101111,%11111000
+.byt %00101111,%01111000
+.byt %00101111,%11111100
+.byt %00011111,%11111100
+
+pic_skull
+.byt %00000000,%00000000
+.byt %00000111,%11100000
+.byt %00001111,%11110000
+.byt %00011111,%11111000
+.byt %00110001,%10001100
+.byt %00010001,%10001000
+.byt %00110001,%10001100
+.byt %00110001,%10001100
+.byt %00111111,%11111100
+.byt %00111110,%01111100
+.byt %00011111,%11111000
+.byt %00001101,%01010000
+.byt %00001010,%10110000
+.byt %00000111,%11100000
+.byt %00000000,%00000000
+.byt %00000000,%00000000
+
+pic_fist
+.byt %00000000,%00000000
+.byt %00001111,%11111000
+.byt %00011111,%11110000
+.byt %00011111,%11101100
+.byt %00001111,%11101110
+.byt %00001111,%11101110
+.byt %00001111,%11111110
+.byt %00001111,%11111110
+.byt %00001111,%11111100
+.byt %00011111,%11110000
+.byt %00111111,%00000000
+.byt %01111110,%00000000
+.byt %01111100,%00000000
+.byt %01111000,%00000000
+.byt %01110000,%00000000
+.byt %01100000,%00000000
+
+xscroll
+	lda #0
+;	sta scrsrc
+	sta slinepos_dlo
+	sta slinepos_dhi
+;	lda #$94
+;	sta scrsrc+1
+	lda #25
+	sta scrydelta
+
+	;;;;
+
+scroll	lda #0
+	sta scrdest
+	sta scrsrc	; !!!
+	lda #$96
+	sta scrdest+1
+	lda #$94	; !!!
+	sta scrsrc+1	; !!!
+	lda #20
+	sta tmp
+
+	lda scrollpos_lo
+	sta slinepos_lo
+	lda scrollpos_hi
+	sta slinepos_hi
+
+scrl1	ldx #slinepos_lo
+	jsr posadd
+	tay
+	ldx #24
+
+scrl0	dey
+	bpl scrz1
+	    ldy #24
+scrz1	lda $9400,y
+	scrsrc=*-2
+	sta $9600,x
+	scrdest=*-2
+	dex
+	bpl scrl0
+
+	clc
+	lda scrdest
+	adc #25
+	sta scrdest
+	bcc scrz2
+	    inc scrdest+1
+
+scrz2	clc
+	lda scrsrc
+	adc scrydelta
+	sta scrsrc
+	bcc scrz3
+	    inc scrsrc+1
+scrz3	dec tmp
+	bne scrl1
+
+scrz4	rts
+
+.dsb (65536-*)&31,0
+
+pic_attack
+.byt %00000000,%00000000
+.byt %00000111,%00110010
+.byt %00001100,%00000000
+.byt %00111111,%11000110
+.byt %00001100,%00000110
+.byt %00000111,%00110000
+.byt %00000000,%00000000
+.byt %00000111,%11111110
+.byt %00011100,%10111010
+.byt %01111111,%10101010
+.byt %00111100,%10111010
+.byt %00001111,%11111110
+.byt %00000000,%00000000
+.byt %00110000,%00010000
+.byt %00000000,%00000000
+.byt %00000000,%00000000
+
+free_2
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;; charset ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+.dsb ($1800-*),0
+#print ($1800-free_2)
+
+.byt %00000000	; ----	0
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %00000000
+
+.byt %00000000	; ---d
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %11111111
+.byt %11111111  ;1
+
+.byt %11111111	; --u-
+.byt %11111111
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %00000000  ;2
+
+.byt %11111111	; --ud
+.byt %11111111
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %11111111
+.byt %11111111  ;3
+
+.byt %11000000	; -l--
+.byt %11000000
+.byt %11000000
+.byt %11000000
+.byt %11000000
+.byt %11000000
+.byt %11000000
+.byt %11000000  ;4
+
+.byt %11000000	; -l-d
+.byt %11000000
+.byt %11100000
+.byt %11100000
+.byt %11110000
+.byt %11111100
+.byt %11111111
+.byt %11111111 ;5
+
+.byt %11111111	; -lu-
+.byt %11111111
+.byt %11111100
+.byt %11110000
+.byt %11100000
+.byt %11100000
+.byt %11000000
+.byt %11000000 ;6
+
+.byt %11111111	; -lud
+.byt %11111111
+.byt %11000000
+.byt %10000000
+.byt %10000000
+.byt %11000000
+.byt %11111111
+.byt %11111111 ;7
+
+.byt %00000011	; r---
+.byt %00000011
+.byt %00000011
+.byt %00000011
+.byt %00000011
+.byt %00000011
+.byt %00000011
+.byt %00000011 ;8
+
+.byt %00000011	; r--d
+.byt %00000011
+.byt %00000111
+.byt %00000111
+.byt %00001111
+.byt %00111111
+.byt %11111111
+.byt %11111111 ;9
+
+.byt %11111111	; r-u-
+.byt %11111111
+.byt %00111111
+.byt %00001111
+.byt %00000111
+.byt %00000111
+.byt %00000011
+.byt %00000011 ;10
+
+.byt %11111111	; r-ud
+.byt %11111111
+.byt %00000011
+.byt %00000001
+.byt %00000001
+.byt %00000011
+.byt %11111111
+.byt %11111111 ;11
+
+.byt %11000011	; rl--
+.byt %11000011
+.byt %11000011
+.byt %11000011
+.byt %11000011
+.byt %11000011
+.byt %11000011
+.byt %11000011 ;12
+
+.byt %11000011	; rl-d
+.byt %11000011
+.byt %11000011
+.byt %11000011
+.byt %11000011
+.byt %11000011
+.byt %11100111
+.byt %11111111 ;13
+
+.byt %11111111	; rlu-
+.byt %11100111
+.byt %11000011
+.byt %11000011
+.byt %11000011
+.byt %11000011
+.byt %11000011
+.byt %11000011 ;14
+
+.byt %11111111	; rlud
+.byt %11100111
+.byt %11000011
+.byt %10000001
+.byt %10000001
+.byt %11000011
+.byt %11100111
+.byt %11111111 ;15
+
+.byt %11111111	; full
+.byt %11111111
+.byt %11111111
+.byt %11111111
+.byt %11111111
+.byt %11111111
+.byt %11111111
+.byt %11111111 ;16
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+.byt %11111111	; 17 *** 0 ^
+.byt %11111111
+.byt %11111111
+.byt %11100111
+.byt %11100111
+.byt %11100111
+.byt %11100111
+.byt %11100111
+
+.byt %11111111	; 1 C
+.byt %11111111
+.byt %11111111
+.byt %11100000
+.byt %11100000
+.byt %11111111
+.byt %11111111
+.byt %11111111
+
+.byt %11111111	; 2 r
+.byt %11111111
+.byt %11111111
+.byt %11111000
+.byt %11110000
+.byt %11100000
+.byt %11100000
+.byt %11100000
+
+.byt %11111111	; 3 ~
+.byt %11111111
+.byt %11111111
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %00000000
+
+.byt %11111100	; 4 )
+.byt %11111100
+.byt %11111100
+.byt %00011100
+.byt %00011100
+.byt %11111100
+.byt %11111100
+.byt %11111100
+
+.byt %11111100	; 5 `.
+.byt %11111100
+.byt %11111100
+.byt %00111100
+.byt %00111100
+.byt %00111100
+.byt %00111100
+.byt %00111100
+
+.byt %11111100	; 6 =.
+.byt %11111100
+.byt %11111100
+.byt %00000000
+.byt %00000000
+.byt %11111100
+.byt %11111100
+.byt %11111100
+
+.byt %11111100	; 7 '
+.byt %11111100
+.byt %11111100
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %00000000
+
+.byt %11100111	; 8 U
+.byt %11100111
+.byt %11100111
+.byt %11100111
+.byt %11100111
+.byt %11111111
+.byt %11111111
+.byt %11111111
+
+.byt %11100000	; 9 L
+.byt %11100000
+.byt %11100000
+.byt %11110000
+.byt %11111000
+.byt %11111111
+.byt %11111111
+.byt %11111111
+
+.byt %11100111	; 10 #
+.byt %11100111
+.byt %11100111
+.byt %11100111
+.byt %11100111
+.byt %11100111
+.byt %11100111
+.byt %11100111
+
+.byt %00011100	; 11 j
+.byt %00011100
+.byt %00011100
+.byt %00011100
+.byt %00111100
+.byt %11111100
+.byt %11111100
+.byt %11111100
+
+.byt %00011100	; 12 i
+.byt %00011100
+.byt %00011100
+.byt %00011100
+.byt %00011100
+.byt %00011100
+.byt %00011100
+.byt %00011100
+
+.byt %00000111	; 13 I
+.byt %00000111
+.byt %00000111
+.byt %00000111
+.byt %00000111
+.byt %00000111
+.byt %00000111
+.byt %00000111
+
+.byt %00000000	; 14 _
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %11111111
+.byt %11111111
+.byt %11111111
+
+.byt %00000000	; 15 _.
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %11100000
+.byt %11110000
+.byt %11110000
+
+.byt %11110000	; 16
+.byt %11110000
+.byt %11110000
+.byt %11110000
+.byt %11110000
+.byt %11110000
+.byt %11110000
+.byt %11110000
+
+.byt %00000000	; 17	; korvautuu 0'lla.
+.byt %00000000		; muutenkin voisi fuusioida charsettiä
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %00000000
+.byt %00000000
+
+demodesign
+
+;.byt 1
+;.byt op_sing
+
+;.byt 1+64*3
+;.byt op_sing
+
+;;; init - blank
+
+;;; PWP
+
+.byt 1+64*3
+.byt op_clrscr
+.byt 2
+.byt op_string-(3-1),<($1e00+25*10+8),>($1e00+25*10+8)
+.byt 16,23,16
+
+;.byt op_showpic,<($1e00+25*6+4),>($1e00+25*6+4)
+;.byt (pic_rwprofile0>>8)|(pic_rwprofile0&$f8)
+
+;;; ROBOTIC WARRIOR - PIC? EFFECT?
+
+.byt 1+64*3-1
+.byt op_showpic,<($1e00+25*3+4),>($1e00+25*3+4)
+.byt (pic_fist>>8)|(pic_fist&$f8)
+
+.byt 1+8*3
+.byt op_string-(7-1),<($1e00+4),>($1e00+4)
+.byt 18,15,2,15,20,9,3 ; ROBOTIC
+
+.byt 1+8*3
+.byt op_string-(7-1),<($1e00+25*18+4),>($1e00+25*18+4)
+.byt 23,1,18,18,9,15,18 ; WARRIOR
+
+;.byt 18,5,22,15,12,21,20,9,15,14  ; REVOLUTION
+
+;;; BLANK
+
+.byt 1+64*3-16*3
+.byt op_copy+2-1,<(colorscheme-4),>colorscheme,$00,$00
+
+.byt 1+4*3
+.byt op_copy+2-1,<(colorscheme-4+2),>colorscheme,$00,$00
+
+.byt 1+4*3
+.byt op_copy+2-1,<(colorscheme-4+4),>colorscheme,$00,$00
+
+.byt 1+4*3
+.byt op_copy+1-1,<(colorscheme-4+6),>colorscheme,$00
+
+.byt 1+2*3
+.byt op_copy+1-1,<(colorscheme-4+7),>colorscheme,$00
+
+.byt 1+2*3
+.byt op_clrscr
+
+.byt 1+32*3
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<fadeout,>fadeout
+.byt 2
+.byt op_copy+8-1,<(colorscheme-4),>(colorscheme-4)
+.byt 3,5,7,1,1,7,5,3
+
+;;;;;;;;; EONS AGO
+
+.byt 1+16*3-1
+.byt op_sing
+.byt 4
+.byt op_string-(8-1),<($1e00+25+4),>($1e00+25+4)
+.byt 5,15,14,19,0,1,7,15 ; EONS AGO
+
+.byt 1+32*3-3
+.byt op_clrscr
+
+.byt 1+16*3
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<fadein,>fadein
+
+;;;;;;;;; THERE WAS A LAND
+
+.byt 1+16*3
+.byt op_sing
+.byt 3
+.byt op_string-(9-1),<($1e00+25+2),>($1e00+25+2)
+.byt 20,8,5,18,5,0,23,1,19 ; THERE WAS
+
+.byt 1+8*3-2
+.byt op_string-(9-1),<($1e00+25+2),>($1e00+25+2)
+.byt 0,0,1,0,12,1,14,4,0 ; _A LAND_
+
+.byt 1+24*3
+.byt op_clrscr
+
+;;;;;;;;; THE LAND WAS RULED
+
+.byt 1+32*3
+.byt op_sing
+.byt 2
+.byt op_showpic,<($1e00+25*4+4),>($1e00+25*4+4)
+.byt (pic_sceptre>>8)|(pic_sceptre&$f8)
+.byt 2
+.byt op_string-(8-1),<($1e00+25+4),>($1e00+25+2)
+.byt 20,8,5,0,12,1,14,4 ; THE LAND
+
+.byt 1+16*3-2
+.byt op_string-(9-1),<($1e00+25+2),>($1e00+25+2)
+.byt 23,1,19,0,18,21,12,5,4 ; WAS RULED
+
+.byt 1+28*3+16*3
+.byt op_clrscr
+
+;;;;;;;;; BY AN EVIL EMPEROR
+
+.byt 1+4*3
+.byt op_sing
+.byt 2
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<purefill,>purefill
+.byt 2
+.byt op_showpic,<($1e00+25*6+4),>($1e00+25*6+4)
+.byt (pic_emperor>>8)|(pic_emperor&$f8)
+.byt 2
+.byt op_string-(10-1),<($1e00+25+2),>($1e00+25+2)
+.byt 2,25,0,1,14,0,5,22,9,12 ; BY AN EVIL
+.byt 1+20*3-3
+.byt op_string-(10-1),<($1e00+25+2),>($1e00+25+2)
+.byt 0,5,13,16,5,18,15,18,0,0 ; EMPEROR
+.byt 1+(12+16+12)*3
+.byt op_clrscr
+
+;;;;;;;;; PEOPLE WERE TORTURED - fxfill
+
+.byt 1+4*3
+.byt op_sing
+.byt 2
+.byt op_copy+8-1,<(colorscheme-4),>(colorscheme-4)
+.byt 2,7,7,1,1,7,7,2
+.byt 2
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<fxfill,>fxfill
+.byt 2
+.byt op_showpic,<($1e00+25*4+4),>($1e00+25*4+4) ; pic = tortured human
+.byt (pic_torture>>8)|(pic_torture&$f8)
+.byt 2
+.byt op_string-(11-1),<($1e00+25+1),>($1e00+25+1)
+.byt 16,5,15,16,12,5,0,23,5,18,5 ; PEOPLE WERE
+.byt 1+20*3-4
+.byt op_string-(11-1),<($1e00+25+1),>($1e00+25+1)
+.byt 0,0,20,15,18,20,21,18,5,4,0 ; TORTURED
+.byt 1+16*3+24*3
+.byt op_clrscr
+
+;;;;;;;;;; BUT REVENGE WAS TO COME - purefill?
+
+.byt 1+4*3
+.byt op_sing
+.byt 1
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<purefill,>purefill
+.byt 2
+.byt op_showpic,<($1e00+25*4+4),>($1e00+25*4+4)
+.byt (pic_fist>>8)|(pic_fist&$f8)
+.byt 3
+.byt op_string-(11-1),<($1e00+25+1),>($1e00+25+1)
+.byt 2,21,20,0,18,5,22,5,14,7,5 ; BUT REVENGE
+.byt 1+20*3-3
+.byt op_string-(11-1),<($1e00+25+1),>($1e00+25+1)
+.byt 23,1,19,0,20,15,0,3,15,13,5 ; WAS TO COME
+
+.byt 1+40*3
+.byt op_clrscr
+
+;;;;;;;;;; PEOPLE HAD CONSTRUCTED
+
+.byt 1+4*3
+.byt op_sing
+.byt 1
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<xplasma,>xplasma
+.byt 2
+.byt op_showpic,<($1e00+25*4+4),>($1e00+25*4+4)
+.byt (pic_hand>>8)|(pic_hand&$f8)
+.byt 3
+.byt op_string-(11-1),<($1e00+25+1),>($1e00+25+1)
+.byt 16,5,15,16,12,5,0,8,1,4,0   ; PEOPLE HAD
+.byt 1+24*3-3
+.byt op_string-(11-1),<($1e00+25+1),>($1e00+25+1)
+.byt 3,15,14,19,20,18,21,3,20,5,4 ; CONSTRUCTED
+.byt 2
+.byt op_showpic,<($1e00+25*4+4),>($1e00+25*4+4)
+.byt (pic_attack>>8)|(pic_attack&$f8)
+
+.byt 1+36*3
+.byt op_clrscr
+
+;;;;;;;;;;; A ROBOTIC WARRIOR
+
+.byt 1+4*3-3
+.byt op_sing
+.byt 1
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<purefill,>purefill
+.byt 2
+.byt op_showpic2 ; ,<($1e00+25*6+4),>($1e00+25*6+4)
+.byt (pic_rwwhole2>>8)|(pic_rwwhole2&$f8)
+.byt 3
+.byt op_string-(9-1),<($1e00+25+2),>($1e00+25+2)
+.byt 1,0,18,15,2,15,20,9,3 ; A ROBOTIC
+.byt 1+24*3-3
+.byt op_string-(9-1),<($1e00+25+2),>($1e00+25+2)
+.byt 0,23,1,18,18,9,15,18,0 ; WARRIOR
+
+.byt 1+36*3
+.byt op_clrscr
+
+;;;;;;;;;;; anim - xscroll with rw
+
+.byt 1+4*3	; RW ->
+.byt op_clrscr
+.byt 2
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<xscroll,>xscroll
+.byt 2
+.byt op_showpic2 ;,<($1e00+25*6+4),>($1e00+25*6+4)
+.byt (pic_rwprofile0>>8)|(pic_rwprofile0&$f8)
+
+.byt 1+32*3-2	; EMPEROR purefill
+.byt op_clrscr
+.byt 2
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<purefill,>purefill
+.byt 2
+.byt op_showpic2 ;,<($1e00+25*6+4),>($1e00+25*6+4)
+.byt (pic_emperor>>8)|(pic_emperor&$f8)
+
+.byt 1+32*3-2	; RW ->
+.byt op_clrscr
+.byt 2
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<xscroll,>xscroll
+.byt 2
+.byt op_showpic,<($1e00+25*6+4),>($1e00+25*6+4)
+.byt (pic_rwprofile0>>8)|(pic_rwprofile0&$f8)
+
+.byt 1+32*3-2	; emperor CASTS A SPELL
+.byt op_clrscr
+.byt 2
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<xplasma,>xplasma
+.byt 2
+.byt op_showpic2 ; ,<($1e00+25*6+4),>($1e00+25*6+4)
+.byt (pic_hand>>8)|(pic_hand&$f8)
+
+.byt 1+32*3-2	; <--- emperor attacks ---
+.byt op_clrscr
+.byt 2
+.byt op_copy+1-1,<(scrollpos_dhi-4),>(scrollpos_dhi-4),$ff
+.byt 2
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<xscroll,>xscroll
+.byt 2
+.byt op_showpic2 ; ,<($1e00+25*6+4),>($1e00+25*6+4)
+.byt (pic_lightning>>8)|(pic_lightning&$f8)
+
+.byt 1+32*3-3	; RW purefill
+.byt op_clrscr
+.byt 2
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<purefill,>purefill
+.byt 2
+.byt op_showpic2 ; ,<($1e00+25*6+4),>($1e00+25*6+4)
+.byt (pic_rwprofile0>>8)|(pic_rwprofile0&$f8)
+
+.byt 1+32*3-2	; ---- rw attacks ---->
+.byt op_clrscr
+.byt 2
+.byt op_copy+1-1,<(scrollpos_dhi-4),>(scrollpos_dhi-4),$1
+.byt 2
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<xscroll,>xscroll
+.byt 2
+.byt op_showpic2 ; ,<($1e00+25*6+4),>($1e00+25*6+4)
+.byt (pic_attack>>8)|(pic_attack&$f8)
+
+.byt 1+32*3-3	; emperor fxfill
+.byt op_clrscr
+.byt 2
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<fadeout,>fadeout
+.byt 2
+.byt op_showpic2 ; ,<($1e00+25*6+4),>($1e00+25*6+4)
+.byt (pic_emperor>>8)|(pic_emperor&$f8)
+.byt 1+16*3-2
+.byt op_showpic2 ; ,<($1e00+25*6+4),>($1e00+25*6+4)
+.byt (pic_skull>>8)|(pic_skull&$f8)
+
+;;;;;;;;;;; anim part 2 - VICTORY
+
+;;;;;;;;;;;               OBTAINING IMPERIAL CONTROL
+
+.byt 1+16*3
+.byt op_clrscr
+.byt 2
+;.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<fadeout,>fadeout
+;.byt 2
+.byt op_string-(7-1),<($1e00+25*11+5),>($1e00+25*11+5)
+.byt 22,9,3,20,15,18,25 ; VICTORY
+
+.byt 1+32*3-1
+.byt op_clrscr
+.byt 2
+.byt op_showpic2 ; ,<($1e00+25*6+4),>($1e00+25*6+4)
+.byt (pic_rwwhole2>>8)|(pic_rwwhole2&$f8)
+
+.byt 1+32*3-1
+.byt op_clrscr
+.byt 2
+.byt op_copy+8-1,<(colorscheme-4),>(colorscheme-4)
+.byt 1,3,3,6,6,3,3,1
+.byt 1+4*3-1
+.byt op_string-(9-1),<($1e00+25*3+12-9),>($1e00+25*3+12-9)
+.byt 15,2,20,1,9,14,9,14,7
+.byt 1+4*3
+.byt op_string-(7-1),<($1e00+25*15+12-7),>($1e00+25*15+12-7)
+.byt 3,15,14,20,18,15,12
+.byt 1+4*3
+.byt op_string-(8-1),<($1e00+25*9+12-8),>($1e00+25*9+12-8)
+.byt 9,13,16,5,18,9,1,12
+
+.byt 1+20*3
+.byt op_clrscr
+.byt 2
+.byt op_showpic2
+.byt (pic_sceptre>>8)|(pic_sceptre&$f8)
+
+;.byt op_string-(7-1),<($1e00+5),>>($1e00+5)
+;.byt 22,9,3,20,15,18,25
+
+;;;;;;;;;;; AND SO BEGAN	mikä kuva sopii tähän?
+
+.byt 1+32*3-1
+.byt op_sing	; AND SO BEGAN
+		; 012345678901
+.byt 2
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<fxfill,>fxfill
+.byt 2
+.byt op_showpic2 ; ,<($1e00+25*4+4),>($1e00+25*4+4)
+.byt (pic_monster>>8)|(pic_monster&$f8)
+.byt 2
+.byt op_string-(12-1),<($1e00+25),>($1e00+25)
+.byt 1,14,4,0,19,15,0,2,5,7,1,14
+
+.byt 1+32*3-3
+.byt op_clrscr
+
+.byt 1+32*3
+.byt op_sing	; A NEW HAPPY AGE
+.byt 2
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<xscroll,>xscroll
+.byt 2
+.byt op_showpic2 ; ,<($1e00+25*4+4),>($1e00+25*4+4)
+.byt (pic_heart>>8)|(pic_heart&$f8)
+.byt 2
+.byt op_string-(5-1),<($1e00+25+7),>($1e00+25+7)
+.byt 1,0,14,5,23
+
+.byt 1+16*3-3
+.byt op_string-(9-1),<($1e00+25+3),>($1e00+25+3)
+.byt 8,1,16,16,25,0,1,7,5
+
+.byt 1+16*3
+.byt op_clrscr
+
+.byt 1+32*3
+.byt op_sing
+.byt 2
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<purefill,>purefill
+.byt 2
+.byt op_showpic2 ; ,<($1e00+25*4+4),>($1e00+25*4+4)
+.byt (pic_skull>>8)|(pic_skull&$f8)
+.byt 2
+.byt op_string-(10-1),<($1e00+25+2),>($1e00+25+2)
+.byt 1,12,12,0,8,21,13,1,14,19	; ALL HUMANS
+.byt 1+16*3-3
+.byt op_string-(11-1),<($1e00+25+1),>($1e00+25+1)
+.byt 23,5,18,5,0,11,9,12,12,5,4	; WERE KILLED
+
+.byt 1+32*3
+.byt op_clrscr
+
+.byt 1+16*3
+.byt op_sing
+.byt 2
+.byt op_copy+1-1,<($900f-4),>($900f-4),$08
+.byt 2
+.byt op_showpic2 ; ,<($1e00+25*4+4),>($1e00+25*4+4) 
+.byt (pic_rwwhole2>>8)|(pic_rwwhole2&$f8)
+.byt 3
+.byt op_string-(3-1),<($1e00+25+10),>($1e00+25+10)
+.byt 1,14,4	; AND
+.byt 1+4*3-3
+.byt op_string-(11-1),<($1e00+25+1),>($1e00+25+1)
+.byt 18,5,16,12,1,3,5,4,0,2,25	; REPLACED BY
+.byt 1+16*3-3
+.byt op_clrscr
+.byt 2
+.byt op_string-(6-1),<($1e00+25+6),>($1e00+25+6)
+.byt 18,15,2,15,20,19	; ROBOTS
+.byt 2
+.byt op_showpic2 ; ,<($1e00+25*4+4),>($1e00+25*4+4)
+.byt (pic_robots>>8)|(pic_robots&$f8)
+
+.byt 1+24*3-2
+.byt op_clrscr
+.byt 2
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<fadeout,>fadeout
+.byt 2
+.byt op_copy+1-1,<($900f-4),>($900f-4),$01
+
+;;;;;;;;;;;;;;;;;;;;;;;; ALL HAIL WARRIOR ;;;;;;;;;;;;;;;;;;;;;
+
+.byt 1+20*3-2
+.byt op_sing
+.byt 2
+.byt op_string-(3-1),<($1e00+3),>($1e00+3)
+.byt 1,12,12 ; ALL
+
+.byt 1+16*3-1
+.byt op_string-(4-1),<($1e00+13),>($1e00+13)
+.byt 8,1,9,12 ; HAIL
+
+.byt 1+16*3
+.byt op_string-(7-1),<($1e00+25*18+5),>($1e00+25*18+5)
+.byt 23,1,18,18,9,15,18 ; WARRIOR
+
+.byt 1+16*3
+.byt op_showpic,<($1e00+25*3+4),>($1e00+25*3+4)
+.byt (pic_rwwhole2>>8)|(pic_rwwhole2&$f8)
+
+.byt 1+64*3-48*3
+.byt op_sing
+
+.byt 2
+.byt op_showpic,<($1e00+25*3+4),>($1e00+25*3+4)
+.byt (pic_robots>>8)|(pic_robots&$f8)
+
+;.byt 1+32*3-1
+;.byt op_showpic2 ; ,<($1e00+25*4+4),>($1e00+25*4+4) ; turhaa?
+;.byt (pic_heart>>8)|(pic_heart&$f8)	    ; siirrä tämä vaihto muualle
+
+.byt 1+64*3-1
+.byt op_sing
+.byt 2
+.byt op_copy+1-1,<($900f-4),>($900f-4),$08
+.byt 2
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<xplasma,>xplasma
+.byt 2
+.byt op_showpic,<($1e00+25*3+4),>($1e00+25*3+4)
+.byt (pic_rwprofile0>>8)|(pic_rwprofile0&$f8)
+
+.byt 1+64*3-3
+.byt op_sing
+.byt 2
+.byt op_copy+2-1,<(fxrtn-4),>(fxrtn-4),<fadeout,>fadeout
+.byt 2
+.byt op_copy+1-1,<(colorscheme-4),>(colorscheme-4)
+.byt 0
+.byt 1+8*3-2
+.byt op_copy+1-1,<(endswitch-4),>(endswitch-4),$ce
+
+.byt 255
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;	fadein 
+
+fadeadders = qphone_p
+
+fadeout	.(		; to first color of scheme
+	ldy #16
+l0	jsr getfadex
+	lda colorscheme
+	sta $9600,x
+	sta $9700,x
+	dey
+	bne l0
+	rts
+	.)
+
+fadein	.(		; to first color of scheme
+	ldy #8
+l0	jsr getfadex
+	lda $9400,x
+	sta $9600,x
+	lda $9500,x
+	sta $9700,x
+	dey
+	bne l0
+	rts
+	.)
+
+getfadex .(
+	lda timer
+	rol
+	rol
+	adc fadeadders,y
+	eor timer
+	tax
+	rts
+	.)
+
+;;;	colregmess - 900f
+
+colregmess
+	.(
+	ldx #0
+l0	txa
+	and #7
+	tay
+	lda colorscheme,y
+;	and #$f0
+	sta $900f
+	dex
+	bne l0
+	rts
+	.)
+
+posadd	; x = pointer to zeropage with
+	;     poslo(0), poshi(1), deltalo(2), deltahi(3)
+
+	clc
+	lda 0,x
+	adc 2,x
+	sta 0,x
+
+	lda 1,x
+	adc 3,x
+	clc
+	bpl posadd0
+	    adc #25
+posadd0	cmp #25
+	bmi posadd1
+	    adc #256-25
+posadd1	sta 1,x
+	rts
+
+xplasma
+;	lda #$00
+;	sta scrsrc
+;	lda #$94
+;	sta scrsrc+1
+	ldx #0
+	stx scrydelta
+
+	lda timer
+	asl
+	asl
+	bcc xplz2
+	    eor #$ff
+xplz2	sta slinepos_dlo
+	bpl xplz1
+	    dex
+xplz1	stx slinepos_dhi
+	jmp scroll
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+.dsb (65536-*)&31
+
+pic_hand
+.byt %00000000,%00000000
+.byt %00000000,%10000000
+.byt %00001100,%10011000
+.byt %00001100,%10011000
+.byt %00000110,%10110010
+.byt %00000110,%10110010
+.byt %01100110,%10110110
+.byt %01110111,%11100110
+.byt %01110111,%11111100
+.byt %00110111,%11111100
+.byt %00111111,%11111100
+.byt %00111111,%11111000
+.byt %00011111,%11111000
+.byt %00001111,%11110000
+.byt %00000111,%11100000
+.byt %00000111,%11100000
+
+; vielä 1 kuva mahtuu
+
+pic_monster
+.byt %00000000,%00000000
+.byt %00000001,%11100000
+.byt %00111001,%01110000
+.byt %00101000,%01111000
+.byt %00111000,%01111100
+.byt %00010000,%11111010
+.byt %00011111,%11110010
+.byt %00000001,%11100010
+.byt %00000001,%11100010
+.byt %00011100,%11110010
+.byt %00010111,%11111110
+.byt %00011100,%01111000
+.byt %00000000,%00110000
+.byt %00000010,%01110000
+.byt %00000011,%11110000
+.byt %00000000,%00000000
+
+free_3
+
+tmpspace=$1d00
+.dsb ($1d00-*),0
+#print ($1d00-free_3)
+
+mcstart
+initz	lda $9004
+	bne initz
+
+	lda #10
+	sta $900e
+
+;	lda #174
+;	sta $900a
+
+	lda #<demodesign
+	sta dzptr
+	lda #>demodesign
+	sta dzptr+1
+
+;	lda #9		; xpos
+;	sta $9000
+;
+;	lda #25+128
+;	sta $9002
+;
+;	lda #40
+;	sta $9003
+;	sta $9001
+;
+;	lda #$fe	; chars $1800-
+;	sta $9005
+
+	;;;;;;;;;
+
+	lda #0
+	sta d_bitcount
+	sta d_phonecount
+	sta d_lyricsub
+	sta scrollpos_lo
+	sta scrollpos_hi
+	sta scrollpos_dlo
+
+	lda #1		; first + 1
+	sta d_bytecount
+	sta scrollpos_dhi
+
+	lda #10
+	sta d_loopsz
+
+	lda #1
+	sta d_loopcount
+
+	ldx #10
+ill0	lda #$10
+	sta colorscheme-1,x
+	lda videobytes-1,x
+	sta $8fff,x
+	dex
+	bne ill0
+
+
+	;;;;;;;;;;;;;;;;;;; decompress bgpic ;;;;;;;;;;;;;;;;;;
+
+	ldy #0
+l1	ldx #12
+l0	lda bgpic_forest
+	bgpicptr=*-2
+	inc bgpicptr
+	sta $9400,y
+	sta $9400+1,y
+	sta $9400+13,y
+	lsr
+	lsr
+	lsr
+	lsr
+	sta $9400+10*25,y
+	sta $9400+10*25+1,y
+	sta $9400+10*25+13,y
+	iny
+	dex
+	bne l0
+	tya
+	clc
+	adc #13
+	tay
+	cpy #250
+	bne l1
+
+	;;;;;;;;;;;;
+
+	txa
+puppa	sta $1e00,x
+	sta $1f00,x
+	sta $9600,x
+	sta $9700,x
+	dex
+	bne puppa
+
+	jsr sing_off
+	jmp postinit
+
+videobytes
+	.byt 9,40,25+128,40,0,$fe
+
+bgpic_forest
+.byt $31,$31,$51,$31,$33,$33,$33,$33,$53,$33
+.byt $31,$31,$73,$71,$51,$51,$71,$71,$71,$51
+.byt $51,$53,$73,$73,$73,$53,$53,$51,$71,$71
+.byt $51,$53,$53,$53,$53,$73,$73,$73,$23,$53
+.byt $73,$71,$51,$51,$53,$53,$53,$73,$73,$73
+.byt $73,$73,$73,$53,$53,$51,$53,$53,$53,$73
+.byt $53,$73,$53,$73,$73,$53,$53,$53,$53,$53
+.byt $71,$73,$73,$71,$71,$51,$71,$53,$53,$23
+.byt $23,$53,$51,$71,$73,$73,$53,$71,$71,$71
+.byt $71,$23,$23,$73,$73,$73,$73,$53,$53,$53
+.byt $73,$71,$71,$71,$21,$71,$71,$53,$73,$73
+.byt $73,$53,$73,$73,$73,$73,$73,$73,$73,$73

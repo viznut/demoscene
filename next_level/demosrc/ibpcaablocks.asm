@@ -1,0 +1,191 @@
+;,; ibpcaablocks .align=1024 .pos=$1400
+;,; -> ch0000183C3C180000
+;,; -> ch000018183C3C3C3C
+;,; -> ch3C3C3C3C18180000
+;,; -> ch3C3C3C3C3C3C3C3C
+;,; -> ch0000F0FCFCF00000
+;,; -> ch0080C0E0F0F8FCFE
+;,; -> chFEFCF8F0E0C08000
+;,; -> chFCFCFCFCFCFCFCFC
+;,; -> ch00000F3F3F0F0000
+;,; -> ch000103070F1F3F7F
+;,; -> ch7F3F1F0F07030100
+;,; -> ch3F3F3F3F3F3F3F3F
+;,; -> ch0000FFFFFFFF0000
+;,; -> ch0000FFFFFFFFFFFF
+;,; -> chFFFFFFFFFFFF0000
+;,; -> chFFFFFFFFFFFFFFFF
+;,; -> ch0000000000000000
+
+ch0000183C3C180000=0
+ch000018183C3C3C3C=1
+ch3C3C3C3C18180000=2
+ch3C3C3C3C3C3C3C3C=3
+ch0000F0FCFCF00000=4
+ch0080C0E0F0F8FCFE=5  ; WHY DOES NOT FIND DUPE
+chFEFCF8F0E0C08000=6
+chFCFCFCFCFCFCFCFC=7
+ch00000F3F3F0F0000=8
+ch000103070F1F3F7F=9
+ch7F3F1F0F07030100=10
+ch3F3F3F3F3F3F3F3F=11  ; !?!?
+ch0000FFFFFFFF0000=12
+ch0000FFFFFFFFFFFF=13
+chFFFFFFFFFFFF0000=14
+chFFFFFFFFFFFFFFFF=15
+ch0000000000000000=16
+
+!byte %00000000 ; rlud
+!byte %00000000 
+!byte %00011000 
+!byte %00111100 
+!byte %00111100 
+!byte %00011000 
+!byte %00000000 
+!byte %00000000
+
+!byte %00000000 ; rlu-
+!byte %00000000 
+!byte %00011000 
+!byte %00011000 
+!byte %00111100 
+!byte %00111100 
+!byte %00111100 
+!byte %00111100
+
+!byte %00111100 ; rl-d
+!byte %00111100 
+!byte %00111100 
+!byte %00111100 
+!byte %00011000 
+!byte %00011000 
+!byte %00000000 
+!byte %00000000
+
+!byte %00111100 ; rl--
+!byte %00111100 
+!byte %00111100 
+!byte %00111100 
+!byte %00111100 
+!byte %00111100 
+!byte %00111100 
+!byte %00111100
+
+!byte %00000000 ; r-ud
+!byte %00000000 
+!byte %11110000 
+!byte %11111100 
+!byte %11111100 
+!byte %11110000 
+!byte %00000000 
+!byte %00000000 
+
+!byte %00000000 ; r-u-
+!byte %10000000 
+!byte %11000000 
+!byte %11100000 
+!byte %11110000 
+!byte %11111000 
+!byte %11111100 
+!byte %11111110
+
+!byte %11111110 ; r--d
+!byte %11111100 
+!byte %11111000 
+!byte %11110000 
+!byte %11100000 
+!byte %11000000 
+!byte %10000000 
+!byte %00000000
+
+!byte %11111100 ; r---
+!byte %11111100 
+!byte %11111100 
+!byte %11111100 
+!byte %11111100 
+!byte %11111100 
+!byte %11111100 
+!byte %11111100
+
+!byte %00000000 ; -lud
+!byte %00000000 
+!byte %00001111 
+!byte %00111111 
+!byte %00111111 
+!byte %00001111 
+!byte %00000000 
+!byte %00000000 
+
+!byte %00000000 ; -lu-
+!byte %00000001 
+!byte %00000011 
+!byte %00000111 
+!byte %00001111 
+!byte %00011111 
+!byte %00111111 
+!byte %01111111 
+
+!byte %01111111 ; -l-d
+!byte %00111111 
+!byte %00011111 
+!byte %00001111 
+!byte %00000111 
+!byte %00000011 
+!byte %00000001 
+!byte %00000000 
+
+!byte %00111111 ; -l--
+!byte %00111111 
+!byte %00111111 
+!byte %00111111 
+!byte %00111111 
+!byte %00111111 
+!byte %00111111 
+!byte %00111111 
+
+!byte %00000000 ; --ud
+!byte %00000000 
+!byte %11111111
+!byte %11111111 
+!byte %11111111 
+!byte %11111111 
+!byte %00000000 
+!byte %00000000 
+
+!byte %00000000 ; --u-
+!byte %00000000 
+!byte %11111111
+!byte %11111111 
+!byte %11111111 
+!byte %11111111 
+!byte %11111111 
+!byte %11111111 
+
+!byte %11111111 ; ---d
+!byte %11111111 
+!byte %11111111 
+!byte %11111111 
+!byte %11111111 
+!byte %11111111 
+!byte %00000000 
+!byte %00000000 
+
+!byte %11111111 ; ----
+!byte %11111111 
+!byte %11111111 
+!byte %11111111 
+!byte %11111111 
+!byte %11111111 
+!byte %11111111 
+!byte %11111111 
+
+!byte %00000000
+!byte %00000000
+!byte %00000000
+!byte %00000000
+!byte %00000000
+!byte %00000000
+!byte %00000000
+!byte %00000000
+
+

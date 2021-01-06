@@ -1,0 +1,42 @@
+!to "decomp.testbin",plain
+
+; RLE_ESCAPE -ehdokkaita:
+; 167, 193, 196, 199, 212
+
+*=$666
+
+RLE_ESCAPE=167
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+	jsr getbyte		; get byte.
+
+	ldx #0			; 0 = wait4data, 1 = wait4count
+	.rlemode=*-1
+	beq .data
+
+	cmp #RLE_ESCAPE		; if count = RLE_ESCAPE -> it is data
+	beq .proc
+
+	dec .rlemode	
+
+	tax
+.l0	lda #0
+	.lastbyte=*-1
+	jsr process
+	dex
+	bne .l0
+	truereturn
+
+.data	cmp #RLE_ESCAPE		; if data=RLE_ESCAPE: ignore byte, set mode
+	bne .proc	
+
+	inc .rlemode
+	return
+
+.proc	sta .lastbyte		; note last databyte
+	jsr process
+
+
+process:
+getbyte:

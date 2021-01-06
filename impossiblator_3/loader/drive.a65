@@ -1,0 +1,330 @@
+;;;;;;; DRIVE CODE: MOST BY ALBERT/PU239, ADAPTATIONS BY VIZNUT ;;;;;;;;
+
+!source "../glob.inc"
+!to "driveside.bin",plain
+!sl "drive_glob.inc"
+
+*=driveside_base
+
+!zone drivecode
+
+acsbf	= $01	; access to buffer 1
+trkbf	= $08	; track of buffer 1
+sctbf	= $09	; sector of buffer 1
+iddrv0	= $12	; id of drive 0
+id	= $16	; id
+
+via1pb	= $1800
+via2pb	= $1c00
+
+buf	= $0400	; sector buffer (for job 1)
+datbf	= $14	; databuffer - temporary (on 1581 sector for job 4)
+
+;	lda $ff54	; Execute Job -routine entry in the jump table
+;	cmp #$4c	; jmp abs	- probably exists
+;	beq drive1581
+;	cmp #$6c	; jmp (abs)	- probably exists
+;	beq drive1581
+;	jmp drive1571
+
+;	PROTOKOLLANVAIHDOS:
+;	pistetään levari antamaan startbittinä nollaa, joka täytyy aina
+;	aknata pois ensin. (defaulttina tulisi ykkösiä)
+
+RETRIES=30
+
+driveside:
+	cld
+	sei
+
+	ldy #2		; not ready
+	sta via1pb
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;	unused areas in 1541 zeropage:
+;	$14 $15 $1b $35 $37 $46
+
+!if (0) {	; TESTCODE
+.haha0	ldy #0
+
+.haha
+	ldx .sendstuff,y
+	jsr send
+	iny
+	cpy #.sendstuff_end-.sendstuff
+	bne .haha
+
+.v0	lda via2pb
+	eor #$8
+	sta via2pb
+
+	ldy #0
+	ldx #0
+.u0	dex
+	bne .u0
+	dey
+	bne .u0
+
+	jmp .haha0
+.sendstuff:
+	!byte $3,$00,$1e
+	!scr "joo"
+	!byte $3,$00,$96
+	!byte 1,1,1
+;!bin "../bin/liber0.bin"
+.sendstuff_end:
+}
+
+;;;;;;;	FIND FILE IN DIRECTORY ;;;;;;;;
+
+	ldx #18
+	ldy #1		; read the disk directory (track 18, sector 1)
+.dirloop
+	jsr readsect	; read the sector
+	bcs .errquit	; quit if it could not be read
+
+	ldy #$02
+.nextfile
+	lda buf,y	; check file type
+	and #$83
+	cmp #$82	; must be PRG
+	bne .notfound
+
+	sty .notfound1+1
+	ldx #0
+.cl	lda buf+3,y	; check the first characters
+	cmp name,x
+	bne .notfound1
+	iny
+	inx
+	cpx #NAMELGT
+	bne .cl
+
+;;;;;;; FOUND FILE ;;;;;;;;;;;
+
+.found	ldy .notfound1+1
+	ldx buf+1,y	; get the track and sector numbers
+	lda buf+2,y
+	tay
+
+;;;;;;; READ NEW SECTOR AND SEND IT ;;;;;;;
+
+.nextsect
+	jsr readsect
+	bcs .errquit	; quit if the sector could not be read
+	ldy #255
+	lda buf
+	bne .notlast	; if the track is nonzero, this wasn't the last sector
+
+	ldy buf+1	; last sector: get sector length
+.notlast
+	sty .numlast+1
+
+	ldy #1		; skip the track and sector when sending the buffer
+.sendbuf		; send the buffer contents to the computer
+	ldx buf+1,y
+.noesc	jsr send
+	iny
+.numlast
+	cpy #255	; were all bytes of the block sent?
+	bne .sendbuf
+
+	ldy buf+1	; store the track and sector of next block
+	ldx buf
+	bne .nextsect	; loop until all sectors are loaded
+
+.finish	; ESCAPES REMOVED
+
+	inc name+NAMELGT-1
+	jmp driveside
+
+;;;;;;;; FILE NOT FOUND: GO FORWARD ;;;;;;;;;
+
+.notfound1
+	ldy #0
+.notfound
+	tya
+	clc
+	adc #$20
+	tay
+	bcc .nextfile
+
+	ldy buf+1	; get next sector
+	ldx buf		; and track
+	bne .dirloop	; keep trying until the last directory block has been searched
+	; file not found: fall through
+.errquit
+	;ldx #1
+	;jsr send
+	jmp .errquit
+
+;;;;;;; SECTOR READER ;;;;;;;;;;
+
+;	trkbf	6+2n
+;	sctbf	7+2n
+;	acsbf	n
+;	memarea: $300+$100*n
+
+;	sta acsbf_ptr
+;	clc
+;	adc #3
+;	sta buf_ptr
+;	asl
+;	adc #6
+;	sta trkbf_ptr
+;	adc #1
+;	sta sctbf_ptr
+
+readsect
+	stx trkbf
+	sty sctbf
+	ldy #RETRIES	; load the retry count
+	cli		; enable interrupts, so that the command will be executed
+.retry	lda #$80
+	sta acsbf	; code for reading the sector
+.poll1	
+	ldy #2		; not ready
+	sta via1pb
+
+	lda acsbf	; wait for the command to complete
+	bmi .poll1
+	cmp #1
+	bne .noexit
+	clc
+	sei		; disable interrupts again to make the program faster
+	rts		; success: exit the loop
+
+.noexit	dey		; decrement the retry count
+	bmi .error	; quit if there were too many retries
+
+	cpy #RETRIES / 2
+	bne .skipcode
+
+	lda #$c0
+	sta acsbf	; half the retries left: knock the head (seek track 1)
+.skipcode
+	lda id		; tolerate disk id changes
+	sta iddrv0
+	lda id+1
+	sta iddrv0+1
+
+.poll2	
+	ldy #2		; not ready
+	sta via1pb
+
+	lda acsbf	; wait for the command to complete
+	bmi .poll2
+	bpl .retry	; branch always
+
+.error
+	sec
+	sei
+	rts
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;	$911f ja $912c:
+;
+;	VIC:			DRIVE:
+
+;	9111.80  atn out   -->	via1pb.80
+;	9111.02  data in   <--	via1pb.02
+;	9111.01  clock in  <--	via1pb.08
+;	912c.20	 data out  -->  via1pb.01	kolmen puskuri?
+;	912c.02  clock out -->  via1pb.04	kolmen puskuri?
+
+;;;;;;;;;;;;;; HALFSYNCHRONIC TRANSMIT ;;;;;;;;;;;;;;;;;;;;
+
+.gotatn:
+	pla
+	pla
+	cli
+	rts
+
+send:
+	sty $1b
+	stx datbf
+	ldx #4
+
+	; ptr    s01234567
+	; data   0xxxxxxxx
+	; aknclk 1010101010
+
+	;;;;;;;;;;; first bit is sent without waiting for akn
+
+	lsr datbf	; prepare d0
+	ldy #0
+	bcs .z1
+	ldy #8
+.z1	lda #8		; STARTBIT: 0
+	sta via1pb	; TODO: aloita looppi .l1:stä
+	bne .c0
+
+;!	lsr datbf
+;!	ldy #0
+;!	bcs .c0z
+;!	ldy #8
+;!	bcc .c0z
+
+	;;;;;;;;;;;
+
+.l1	lsr datbf	; 5
+	ldy #0		; 2
+	bcs .c0		; 3/4
+	ldy #8
+.c0
+	lda #$81	; 2
+.l0	bit via1pb	; 4
+	;bmi .gotatn	; 2
+	bne .l0		; 2+7n
+.c0z	sty via1pb	; 4     worst case akn: 4+2+7+4 == 17 clocks
+			;	from last sty:  28(..35) clocks
+
+	;;;;;;;;;;;
+
+	lsr datbf	; 5
+	ldy #0		; 2
+	bcs .c0b	; 3/4
+	ldy #8
+.c0b
+	lda #$81	; 2
+.l0b	bit via1pb	; 4
+	beq .l0b	; 2+74
+	;bmi .gotatn	; 2
+	sty via1pb	; 4	worst case akn: 4+2+7+4+2 == 19 clocks
+			;       from last sty:  25(..32) clocks
+
+	dex		; 2
+	bne .l1		; 3
+
+;	atncheck
+;	
+	;;;;;;;;;;; after last bit of byte akned: "not ready"
+
+	ldy #0		; STOP BIT 1	; was "2"
+	lda #1
+.l0c	bit via1pb
+	bne .l0c
+	sty via1pb
+
+	;;; akn stopbit - no new startbit before this
+
+	ldy $1b
+
+	lda #$81
+.l0d	bit via1pb
+	bne .l0d
+	;bmi .gotatn
+
+	lda via2pb
+	eor #8
+	sta via2pb
+
+	rts
+
+NAMELGT=6
+name	!pet "impo3a"
+
+driveside_end:
+	!byte 0

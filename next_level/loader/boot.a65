@@ -1,0 +1,205 @@
+*=$1001
+;*=4096+512+1	; KLUDGEZZZZ
+;!to "boot.prg"
+!cpu 6510
+
+!source "loader_glob.inc"
+!source "drive_glob.inc"
+!sl "start_glob.inc"
+
+!zone basic
+linenum=2008
+basic:	!word .basend,linenum
+        !byte $9e
+	!byte $30+(mcstart/1000)
+        !byte $30+((mcstart/100)%10)
+        !byte $30+((mcstart/10)%10)
+        !byte $30+(mcstart%10)
+
+;	!source "listlogo.inc"
+
+        !byte 0
+.basend	!word 0,0
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+CHROUT=$ffd2
+IOINIT=$fdf9
+SECND=$ff93
+CIOUT=$ffa8
+UNLSN=$ffae
+LISTN=$ffb1
+
+CLALL=$ffe7
+
+SETLFS=$ffba
+SETNAM=$ffbd
+OPEN=$ffc0	;?
+CHKOUT=$ffc9
+CHROUT=$ffd2
+CLRCHN=$ffcc
+READST=$ffb7
+
+iecport1 = $912c	;$dd00	;$912c
+dato = 32		;32	;32
+clko = 2		;16	;2
+iecport2 = $911f	;$dd00	;$911f
+atno = 128		;8	;128
+clki = 1		;64	;1
+dati = 2		;128	;2
+
+iec_in  = $911f
+iec_out = $912c
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+fadecolors:
+	!byte 0,6,2,4,5,3,7,1
+
+drive_error:
+
+.hooo	lda $900f
+	eor #3
+	sta $900f
+	jmp .hooo
+
+mcstart:
+	;;; clrscr
+
+	sei
+	cld
+	lda #25
+	sta $900f
+	lda #0
+	sta $9002
+
+	;;; some drive preparations
+
+	jsr CLALL
+	jsr IOINIT
+
+AMOUNT=20	; bytes per M-W command
+
+upload_drivecode:
+
+	lda #<drivecode
+	sta 251
+	lda #>drivecode
+	sta 252
+	lda #<driveside
+	sta mwcmd+2
+	lda #>driveside
+	sta mwcmd+1
+
+	ldx $ba
+	bne .defd
+	ldx #8
+.defd	ldy #15
+	tya
+	jsr SETLFS
+	lda #0
+	jsr SETNAM
+	jsr OPEN
+	bcs drive_error
+
+.mwloop:
+	ldx #15
+	jsr CHKOUT
+	bcs drive_error
+
+	ldy #mwcmd_lgt
+.smwcmd:
+	lda mwcmd-1,y		; ok  M-W<targaddr><lgt>
+	jsr CHROUT
+	dey			; ok
+	bne .smwcmd		; ok
+
+;	ldy #0
+.mwbyte:
+	lda (251),y		;	ja per‰‰n dataa
+	jsr CHROUT
+
+	iny
+	cpy #AMOUNT
+	bne .mwbyte
+
+	jsr CLRCHN
+
+	clc			; mwbyte+=20
+	lda 251
+	adc #AMOUNT
+	sta 251
+	bcc .c1
+	   clc
+	   inc 252
+.c1	lda mwcmd + 2		; mwcmd+=20 until at drivecode_end
+	adc #AMOUNT
+	sta mwcmd + 2
+	tax
+	lda #0
+	adc mwcmd + 1
+	sta mwcmd + 1
+	cpx #<driveside_end
+	sbc #>driveside_end
+	bcc .mwloop
+
+	ldx #15
+	jsr CHKOUT
+	lda #"U"
+	jsr CHROUT	; ciwait
+	lda #"3"
+	jsr CHROUT	; ciwait
+	jsr CLRCHN
+
+	sei	; sure i here?
+	lda #$dd
+	sta $912c
+	lda #$7e
+	sta $911f
+
+	;;; fadeout
+
+	ldx #7
+.z00	lda fadecolors,x
+	sta $900f
+.z0	lda $9004
+	bne .z0
+.z1	lda $9004
+	beq .z1
+	dex
+	bpl .z00
+
+	;;; copy loadercode
+
+	ldx #loader_lgt
+
+.l0	lda loader_code-1,x
+	sta loader_base-1,x
+	dex
+	bne .l0
+
+	jmp loader_loop
+
+
+mwcmd:
+	!text AMOUNT,>driveside,<driveside,"W-M"
+mwcmd_lgt = *-mwcmd
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+loader_code:
+   !bin "loader.bin"
+loader_lgt=*-loader_code
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+drivecode:
+!bin "driveside.bin"
+drivecode_lgt=*-drivecode
+

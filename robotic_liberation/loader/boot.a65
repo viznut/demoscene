@@ -1,0 +1,426 @@
+*=$1001
+;!to "boot.prg"
+
+!source "loader_glob.inc"
+!source "drive_glob.inc"
+
+!zone basic
+linenum=0
+basic:	!word .basend,linenum
+        !byte $9e
+	!byte $30+(mcstart/1000)
+        !byte $30+((mcstart/100)%10)
+        !byte $30+((mcstart/10)%10)
+        !byte $30+(mcstart%10)
+
+	!source "listlogo.inc"
+
+        !byte 0
+.basend	!word 0,0
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+CHROUT=$ffd2
+IOINIT=$fdf9
+SECND=$ff93
+CIOUT=$ffa8
+UNLSN=$ffae
+LISTN=$ffb1
+
+CLALL=$ffe7
+
+SETLFS=$ffba
+SETNAM=$ffbd
+OPEN=$ffc0	;?
+CHKOUT=$ffc9
+CHROUT=$ffd2
+CLRCHN=$ffcc
+READST=$ffb7
+A
+iecport1 = $912c	;$dd00	;$912c
+dato = 32		;32	;32
+clko = 2		;16	;2
+iecport2 = $911f	;$dd00	;$911f
+atno = 128		;8	;128
+clki = 1		;64	;1
+dati = 2		;128	;2
+
+iec_in  = $911f
+iec_out = $912c
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+!zone main
+mcstart:
+
+;;;;;;;;;;; do some i/o inits ;;;;;;;;;;;
+
+!zone clrscr		 ; invisible testspace
+
+	jsr CLALL
+	jsr IOINIT
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+	ldy #<(err_0-1)
+	lda #>(err_0-1)
+	jsr print_error
+
+	lda #8
+	sta $900f
+
+	ldx #0
+.l0ll0	sta $9600,x
+	dex
+	bne .l0ll0
+
+;;;;;;;;;;; get max $9004 value (must be 155 for pal machine) ;;;;;;;;;;;
+
+!zone linetest
+	sei
+	clc
+	cld
+.l1	lda $9004
+.l0	cmp $9004
+	beq .l0
+	bcc .l1
+	cmp #155
+	beq .ok
+
+	jsr print_next	; err_ntsc follows err_0
+	!byte $02
+.ok
+
+;;;;;;;;;;; initialize loader ;;;;;;;;;;;;;;
+
+!if(DEVMODE=0) {
+	jsr upload_drivecode
+}
+	sei
+	lda #$dd
+	sta $912c
+	lda #$7e
+	sta $911f
+
+	jsr copy_loadercode
+
+;;;;;;;;;;; initial vic values ;;;;;;;;;;;;
+
+!zone initvic
+	ldx #14
+.l0	lda vicvalues,x
+	sta $9000,x
+	dex
+	bpl .l0
+
+;;;;;;;;;;; test machine (using the high nybbles of color memory)
+
+!zone testmachine
+	.tmp=255
+
+testmachine:
+
+	lda #110
+	sta 255
+	tay
+
+.l2	lda 255 ; #32 ; 160	; lda tab,x
+
+	ldx $9001
+.l0	cpx $9004
+	bne .l0
+
+	ldx #16
+.l1	sta $1e00,x
+	dex
+	bne .l1		; (3+2+5)x20	200 == 2 lines + 58
+
+	lda $9400
+
+	dey
+	beq .fail
+
+	eor 255
+	and #$f0
+	bne .l2
+
+	inc 255
+	bpl .l2
+	bmi .ok
+
+.fail	ldy #<(err_emu-1)
+	lda #>(err_emu-1)
+	jsr print_error
+
+	jsr waitkey
+
+.ok	;ldy #<(msg_loading-1)
+	;lda #>(msg_loading-1)
+	;jsr print_error
+
+;;;;;;;;;;;;;;; start loading (with timeout) ;;;;;;;;;;;;;;;;;;;;
+
+	sei
+
+	;;; set interrupt vectors
+
+	ldx #from30bon_end-from30bon
+.l00x	lda from30bon,x
+	sta $30b,x
+	dex
+	bpl .l00x
+
+	;;; set via parameters
+
+	lda #$43	; t1 cont int, t2 oneshot, sr disa, latches disa
+	sta $911b
+	sta $912b
+
+	lda #$7f	; all VIA interrupts disabled
+	sta $911e
+	sta $912e
+
+;	lda #$80	; initial timer val
+;	sta $9124
+;	sta $9125
+
+	lda #$c0	; enable VIA#1 T1 irq
+	sta $912e
+
+
+	;;;	
+
+	lda #0
+	sta 255
+
+.l8	;lda 255
+	;lsr
+	;lsr
+	;lsr
+	;lsr
+	;ora #$08
+	;tax
+
+	lda $9001
+.l9	cmp $9004
+	bne .l9
+.l7	cmp $9004
+	beq .l7
+	;stx $900f
+	jsr loader_irq
+	;lda #$8
+	;sta $900f
+	dec 255	
+	bne .l8
+
+drive_error:
+
+	jsr CLRCHN
+
+	ldy #<(err_drive-1)
+	lda #>(err_drive-1)
+	jsr print_error
+	jsr waitkey
+	jmp mcstart
+
+from30bon:
+	lda $9124				;30b 30c 30d
+	pla					;30e
+	tay					;30f
+	pla					;310
+	tax					;311
+	pla					;312
+	rti					;313
+
+	!byte <$30b,>$30b			;314 315
+	!byte <$30b,>$30b			;316 317
+	!byte <$30b,>$30b			;318 319
+
+from30bon_end:
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+!zone waitkey
+waitkey:
+	cli
+	lda #64
+.w0	cmp 197
+	bne .w0
+.w1	cmp 197
+	beq .w1
+	rts
+
+;;;;;;;;;;;;;;;;;; LOAD DRIVE CODE ;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+!zone upload_drivecode
+
+AMOUNT=20	; bytes per M-W command
+
+upload_drivecode:
+
+	lda #<drivecode
+	sta 251
+	lda #>drivecode
+	sta 252
+	lda #<driveside
+	sta mwcmd+2
+	lda #>driveside
+	sta mwcmd+1
+
+	ldx $ba
+	bne .defd
+	ldx #8
+.defd	ldy #15
+	tya
+	jsr SETLFS
+	lda #0
+	jsr SETNAM
+	jsr OPEN
+	bcs drive_error
+
+.mwloop:
+	ldx #15
+	jsr CHKOUT
+	bcs drive_error
+
+	ldy #mwcmd_lgt
+.smwcmd:
+	lda mwcmd-1,y		; ok  M-W<targaddr><lgt>
+	jsr CHROUT
+	dey			; ok
+	bne .smwcmd		; ok
+
+;	ldy #0
+.mwbyte:
+	lda (251),y
+	jsr CHROUT
+
+	iny
+	cpy #AMOUNT
+	bne .mwbyte
+
+	jsr CLRCHN
+
+; update the addresses
+	clc			; mwbyte+=20
+	lda 251
+	adc #AMOUNT
+	sta 251
+	bcc .c1
+	   clc
+	   inc 252
+.c1	lda mwcmd + 2		; mwcmd+=20 until at drivecode_end
+	adc #AMOUNT
+	sta mwcmd + 2
+	tax
+	lda #0
+	adc mwcmd + 1
+	sta mwcmd + 1
+	cpx #<driveside_end
+	sbc #>driveside_end
+	bcc .mwloop
+
+	ldx #15
+	jsr CHKOUT
+	lda #"U"
+	jsr CHROUT	; ciwait
+	lda #"3"
+	jsr CHROUT	; ciwait
+	jmp CLRCHN
+
+mwcmd:
+	!text AMOUNT,>driveside,<driveside,"W-M"
+mwcmd_lgt = *-mwcmd
+
+;;;;;;;;;; show error or other message ;;;;;;;;;;;;
+
+!zone print_error
+print_error:		; ldy #<ptr lda #>ptr
+	sta 254
+	lda #0
+	sta 253
+
+print_next:
+.l0	jsr CHROUT
+	iny
+	bne .c1
+	inc 254
+.c1	lda (253),y
+	bne .l0
+.rts	rts
+
+vicvalues:
+;	!byte 25,12,38,22+128,46,0,$f0
+;	;     f  0  1  2      3  4 5
+	!byte 12,38,22+128,46,0,$f0 ; ,0,0,0,0,0,0,0,0,0,25
+	!byte 0,0,0,0,$7e,$7d,$7b,$7d,$08
+
+err_0
+	!pet 147,18,30,0
+
+err_ntsc
+	!pet " non-pal vic detected ",13
+	!pet "this is a pal demo.",13
+	!pet "you need a pal vic.",0
+
+err_emu
+	!pet "   emulators suck!!   ",13
+	!pet "some of the hardware",13
+	!pet "tricks used in this",13
+	!pet "demo fail in every",13
+	!pet "contemporary emulator.",13
+	!pet "what you see and hear "
+	!pet "may not be correct.",13
+startprompt
+	!pet 13,18,"press any key to start",13,0
+
+msg_loading
+	!pet "      loading         ",0 ;13
+err_drive
+	!pet 147,18,30
+	!pet "      load error      ",13
+	!pet "this demo requires a",13
+	!pet "1541 compatible drive",13
+	!pet "and a non-broken disk.",13
+	!pet 18,"press any key to retry",0
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+!zone copy_loadercode
+copy_loadercode:
+
+	ldx #loader_lgt
+
+.l0	lda loader_code-1,x
+	sta loader_base-1,x
+	dex
+	bne .l0
+
+	rts
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+loader_code:
+!if(DEVMODE=0) {
+   !bin "loader.bin"
+} else {
+   !bin "loader_dev.bin"
+}
+loader_lgt=*-loader_code
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+drivecode:
+!bin "driveside.bin"
+drivecode_lgt=*-drivecode
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

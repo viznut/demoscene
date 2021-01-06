@@ -1,0 +1,3 @@
+DEVMODE=0
+!to "boot.prg"
+!source "boot.a65"

@@ -1,0 +1,3 @@
+DEVMODE=1
+!to "loader_dev.bin",plain
+!source "loader.a65"
